@@ -1,0 +1,45 @@
+# Environment variables (contains API keys, tokens, secrets)
+.env
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Generated charts / plots
+charts/
+*.png
+
+# CSV backtest results (large, regeneratable)
+reports/*.csv
+
+# Windows reserved device names / artifacts
+nul
+
+# Portfolio state (regenerated on each run)
+portfolio_state.json
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Distribution
+dist/
+build/
+*.egg-info/
