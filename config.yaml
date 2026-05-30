@@ -50,7 +50,7 @@ data:
       - AXISBANK.NS        # Axis Bank
       - BAJFINANCE.NS      # Bajaj Finance (NBFC)
       - MARUTI.NS          # Maruti Suzuki (Auto)
-      - TATAMOTORS.NS      # Tata Motors (Auto)
+      - TATAMOTORS.NS      # Tata Motors (Auto) — removed: 404 on Yahoo Finance, may be delisted
       - SUNPHARMA.NS       # Sun Pharma
       - ASIANPAINT.NS      # Asian Paints (Consumer)
       - NESTLEIND.NS       # Nestle India (FMCG)
@@ -123,8 +123,8 @@ dhan_live_trading:
   min_volatility_pct: 0.0015      # skip BUYs if ATR/close < 0.15% (sideways / dead market)
   stop_buying_minutes: 900        # 15:00 IST — stop opening new positions (30 min before close)
   force_square_off_minutes: 910   # 15:10 IST — auto-square-off all MIS positions
-  tickers:                       # India NSE tickers (22 stocks, diversified across 8 sectors)
-    - ICICIBANK.NS               # Banking — BB: +77.5%, MACD: +47.8%
+  tickers:                       # India NSE tickers (21 stocks, diversified across 8 sectors)
+    - ICICIBANK.NS               # Banking — BB: +99.8%, MACD: +47.8%
     - SBIN.NS                    # Banking — MACD: +40.7%
     - BHARTIARTL.NS              # Telecom — BB: +53.1%, MACD: +52.3%
     - LT.NS                      # Infra — BB: +60.4%, MACD: +56.1%
@@ -136,15 +136,14 @@ dhan_live_trading:
     - ITC.NS                     # FMCG — BB: +33.4%
     - KOTAKBANK.NS               # Banking — diversify from SBIN/ICICI/HDFC
     - AXISBANK.NS                # Banking — diversify from SBIN/ICICI/HDFC
-    - BAJFINANCE.NS              # NBFC — different from banks
+    - BAJFINANCE.NS              # NBFC — Momentum: +64.4%
     - MARUTI.NS                  # Auto — different sector
-    - TATAMOTORS.NS              # Auto — different sector
     - SUNPHARMA.NS               # Pharma — defensive sector
     - ASIANPAINT.NS              # Consumer — different from FMCG
     - NESTLEIND.NS               # FMCG — defensive
     - WIPRO.NS                   # IT — diversify from INFY/TCS
-    - TITAN.NS                   # Consumer — jewelry/watch sector
-    - M&M.NS                     # Auto — different from Maruti/TataMotors
+    - TITAN.NS                   # Consumer — MACD: +59.2%, MA Cross: +57.4%
+    - M&M.NS                     # Auto — different from Maruti
     - HCLTECH.NS                 # IT — diversify from INFY/TCS/WIPRO
   scheduler_strategies:           # strategies the scheduler runs daily (all 5)
     - macd                       # best all-rounder: +37.6% avg, 0.49 avg Sharpe
