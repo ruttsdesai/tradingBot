@@ -50,7 +50,6 @@ data:
       - AXISBANK.NS        # Axis Bank
       - BAJFINANCE.NS      # Bajaj Finance (NBFC)
       - MARUTI.NS          # Maruti Suzuki (Auto)
-      - TATAMOTORS.NS      # Tata Motors (Auto) — removed: 404 on Yahoo Finance, may be delisted
       - SUNPHARMA.NS       # Sun Pharma
       - ASIANPAINT.NS      # Asian Paints (Consumer)
       - NESTLEIND.NS       # Nestle India (FMCG)
