@@ -36,16 +36,28 @@ data:
     lookback_years: 20          # 2006–2026: NSE (India)
     interval: "1d"
     default_tickers:
-      - RELIANCE.NS        # Reliance Industries
-      - TCS.NS             # Tata Consultancy Services
-      - HDFCBANK.NS        # HDFC Bank
-      - INFY.NS            # Infosys
-      - ICICIBANK.NS       # ICICI Bank
-      - BHARTIARTL.NS      # Bharti Airtel
-      - ITC.NS             # ITC Ltd
-      - HINDUNILVR.NS      # Hindustan Unilever
-      - SBIN.NS            # State Bank of India
-      - LT.NS              # Larsen & Toubro
+      - RELIANCE.NS        # Reliance Industries (MACD: +35.9%)
+      - TCS.NS             # Tata Consultancy Services (BB: +82.1%, Sharpe 0.90)
+      - HDFCBANK.NS        # HDFC Bank (BB: +38.7%)
+      - INFY.NS            # Infosys (MACD: +33.2%)
+      - ICICIBANK.NS       # ICICI Bank (BB: +77.5%, MACD: +47.8%)
+      - BHARTIARTL.NS      # Bharti Airtel (BB: +53.1%, MACD: +52.3%)
+      - ITC.NS             # ITC Ltd (BB: +33.4%)
+      - HINDUNILVR.NS      # Hindustan Unilever (MACD: +39.7%)
+      - SBIN.NS            # State Bank of India (MACD: +40.7%)
+      - LT.NS              # Larsen & Toubro (BB: +60.4%, MACD: +56.1%)
+      - KOTAKBANK.NS       # Kotak Mahindra Bank
+      - AXISBANK.NS        # Axis Bank
+      - BAJFINANCE.NS      # Bajaj Finance (NBFC)
+      - MARUTI.NS          # Maruti Suzuki (Auto)
+      - TATAMOTORS.NS      # Tata Motors (Auto)
+      - SUNPHARMA.NS       # Sun Pharma
+      - ASIANPAINT.NS      # Asian Paints (Consumer)
+      - NESTLEIND.NS       # Nestle India (FMCG)
+      - WIPRO.NS           # Wipro (IT)
+      - TITAN.NS           # Titan (Consumer)
+      - M&M.NS             # Mahindra & Mahindra (Auto)
+      - HCLTECH.NS         # HCL Technologies (IT)
   canada:
     lookback_years: 20          # 2006–2026: TSX (Canada)
     interval: "1d"
@@ -111,14 +123,29 @@ dhan_live_trading:
   min_volatility_pct: 0.0015      # skip BUYs if ATR/close < 0.15% (sideways / dead market)
   stop_buying_minutes: 900        # 15:00 IST — stop opening new positions (30 min before close)
   force_square_off_minutes: 910   # 15:10 IST — auto-square-off all MIS positions
-  tickers:                       # India NSE tickers — ranked by 20yr MACD return
-    - ICICIBANK.NS               # MACD: +42.45%, Sharpe 0.52
-    - SBIN.NS                    # MACD: +43.69%, Sharpe 0.50
-    - BHARTIARTL.NS              # MACD: +58.69%, Sharpe 0.65 — best performer
-    - LT.NS                      # MACD: +48.57%, Sharpe 0.63
-    - HINDUNILVR.NS              # MACD: +36.95%, Sharpe 0.51
-    - RELIANCE.NS                # MACD: +35.18%, Sharpe 0.48
-    - INFY.NS                    # MACD: +35.17%, Sharpe 0.48
+  tickers:                       # India NSE tickers (22 stocks, diversified across 8 sectors)
+    - ICICIBANK.NS               # Banking — BB: +77.5%, MACD: +47.8%
+    - SBIN.NS                    # Banking — MACD: +40.7%
+    - BHARTIARTL.NS              # Telecom — BB: +53.1%, MACD: +52.3%
+    - LT.NS                      # Infra — BB: +60.4%, MACD: +56.1%
+    - HINDUNILVR.NS              # FMCG — MACD: +39.7%
+    - RELIANCE.NS                # Conglomerate — MACD: +35.9%
+    - INFY.NS                    # IT — MACD: +33.2%
+    - TCS.NS                     # IT — BB: +82.1%, Sharpe 0.90
+    - HDFCBANK.NS                # Banking — BB: +38.7%, MA Cross: +29.5%
+    - ITC.NS                     # FMCG — BB: +33.4%
+    - KOTAKBANK.NS               # Banking — diversify from SBIN/ICICI/HDFC
+    - AXISBANK.NS                # Banking — diversify from SBIN/ICICI/HDFC
+    - BAJFINANCE.NS              # NBFC — different from banks
+    - MARUTI.NS                  # Auto — different sector
+    - TATAMOTORS.NS              # Auto — different sector
+    - SUNPHARMA.NS               # Pharma — defensive sector
+    - ASIANPAINT.NS              # Consumer — different from FMCG
+    - NESTLEIND.NS               # FMCG — defensive
+    - WIPRO.NS                   # IT — diversify from INFY/TCS
+    - TITAN.NS                   # Consumer — jewelry/watch sector
+    - M&M.NS                     # Auto — different from Maruti/TataMotors
+    - HCLTECH.NS                 # IT — diversify from INFY/TCS/WIPRO
   scheduler_strategies:           # strategies the scheduler runs daily (all 5)
     - macd                       # best all-rounder: +37.6% avg, 0.49 avg Sharpe
     - bollinger_bands            # highest ceiling: +40.8% avg, TCS +78.8%
