@@ -1605,13 +1605,14 @@ def dhan_live(ticker, strategies, all_strategies, once, live_mode, intraday, int
 @click.option("--strategy", "-s", default="ma_crossover",
               type=click.Choice(["ma_crossover", "rsi_mean_revert", "macd",
                                  "bollinger_bands", "momentum_breakout"]),
-              help="Strategy to use")
+              help="Strategy to use (ignored with --all)")
+@click.option("--all", "all_strategies", is_flag=True, help="Run all 5 strategies (MACD, Bollinger, RSI, MA Crossover, Momentum Breakout)")
 @click.option("--interval", "-i", default=None,
               type=click.Choice(["1d", "4h", "1h", "15m", "5m", "1m"]),
               help="Candle interval (default: from config or 1d)")
 @click.option("--once", is_flag=True, help="Run one cycle then exit (default: loop)")
 @click.option("--live", "live_mode", is_flag=True, help="Use Binance LIVE (default: testnet)")
-def crypto_live(ticker, strategy, interval, once, live_mode):
+def crypto_live(ticker, strategy, all_strategies, interval, once, live_mode):
     """Run live crypto trading via Binance (TESTNET by default)."""
     from strategies.ma_crossover import MACrossoverStrategy
     from strategies.rsi_mean_revert import RSIMeanReversionStrategy
@@ -1635,59 +1636,67 @@ def crypto_live(ticker, strategy, interval, once, live_mode):
 
     tickers = list(ticker) if ticker else crypto_cfg.get("tickers", ["BTCUSDT", "ETHUSDT", "SOLUSDT"])
 
+    # Build strategy list (support --all for all 5 strategies)
     strat_cfg = CONFIG["strategies"]
     sizing_cfg = CONFIG.get("position_sizing", {})
-    if strategy == "ma_crossover":
-        mc = strat_cfg["ma_crossover"]
-        strat = MACrossoverStrategy(fast_period=mc["fast_period"], slow_period=mc["slow_period"])
-    elif strategy == "rsi_mean_revert":
-        rsi = strat_cfg["rsi_mean_revert"]
-        strat = RSIMeanReversionStrategy(
-            rsi_period=rsi["rsi_period"],
-            oversold_threshold=rsi["oversold_threshold"],
-            overbought_threshold=rsi["overbought_threshold"],
-        )
-    elif strategy == "macd":
-        mc = strat_cfg["macd"]
-        strat = MACDStrategy(
-            fast_period=mc["fast_period"], slow_period=mc["slow_period"],
-            signal_period=mc["signal_period"],
-        )
-    elif strategy == "bollinger_bands":
-        bb = strat_cfg["bollinger_bands"]
-        strat = BollingerBandsStrategy(period=bb["period"], num_std=bb["num_std"])
-    elif strategy == "momentum_breakout":
-        mb = strat_cfg["momentum_breakout"]
-        strat = MomentumBreakoutStrategy(lookback=mb["lookback"], exit_sma=mb["exit_sma"])
+
+    if all_strategies:
+        strategy_names = ["ma_crossover", "rsi_mean_revert", "macd", "bollinger_bands", "momentum_breakout"]
     else:
-        click.echo(f"Unknown strategy: {strategy}")
-        return
+        strategy_names = [strategy]
 
-    config = CryptoLiveTraderConfig(
-        api_key=binance_key,
-        api_secret=binance_secret,
-        testnet=not live_mode,
-        interval=interval or crypto_cfg.get("interval", "1d"),
-        initial_capital=crypto_cfg.get("initial_capital", 10_000),
-        max_positions=crypto_cfg.get("max_positions", 5),
-        max_allocation_pct=crypto_cfg.get("max_allocation_pct", 0.20),
-        max_daily_loss_pct=CONFIG["risk"]["max_daily_loss_pct"],
-        stop_loss_pct=CONFIG["risk"]["stop_loss_pct"],
-        take_profit_pct=CONFIG["risk"]["take_profit_pct"],
-        poll_interval_seconds=crypto_cfg.get("poll_interval_seconds", 60),
-        use_atr_sizing=sizing_cfg.get("use_atr_sizing", False),
-        position_risk_pct=sizing_cfg.get("position_risk_pct", 0.01),
-        atr_period=sizing_cfg.get("atr_period", 14),
-        atr_multiplier=sizing_cfg.get("atr_multiplier", 2.0),
-    )
+    for strat_name in strategy_names:
+        if strat_name == "ma_crossover":
+            mc = strat_cfg["ma_crossover"]
+            strat = MACrossoverStrategy(fast_period=mc["fast_period"], slow_period=mc["slow_period"])
+        elif strat_name == "rsi_mean_revert":
+            rsi = strat_cfg["rsi_mean_revert"]
+            strat = RSIMeanReversionStrategy(
+                rsi_period=rsi["rsi_period"],
+                oversold_threshold=rsi["oversold_threshold"],
+                overbought_threshold=rsi["overbought_threshold"],
+            )
+        elif strat_name == "macd":
+            mc = strat_cfg["macd"]
+            strat = MACDStrategy(
+                fast_period=mc["fast_period"], slow_period=mc["slow_period"],
+                signal_period=mc["signal_period"],
+            )
+        elif strat_name == "bollinger_bands":
+            bb = strat_cfg["bollinger_bands"]
+            strat = BollingerBandsStrategy(period=bb["period"], num_std=bb["num_std"])
+        elif strat_name == "momentum_breakout":
+            mb = strat_cfg["momentum_breakout"]
+            strat = MomentumBreakoutStrategy(lookback=mb["lookback"], exit_sma=mb["exit_sma"])
+        else:
+            click.echo(f"Unknown strategy: {strat_name}")
+            continue
 
-    interval_tag = f" [{config.interval}]" if config.interval != "1d" else ""
-    click.echo(f"\nBinance Live Trader -- {'LIVE' if live_mode else 'TESTNET'}{interval_tag}")
-    click.echo(f"  Tickers:    {', '.join(tickers)}")
-    click.echo(f"  Strategy:   {strategy}")
+        config = CryptoLiveTraderConfig(
+            api_key=binance_key,
+            api_secret=binance_secret,
+            testnet=not live_mode,
+            interval=interval or crypto_cfg.get("interval", "1d"),
+            initial_capital=crypto_cfg.get("initial_capital", 10_000),
+            max_positions=crypto_cfg.get("max_positions", 5),
+            max_allocation_pct=crypto_cfg.get("max_allocation_pct", 0.20),
+            max_daily_loss_pct=CONFIG["risk"]["max_daily_loss_pct"],
+            stop_loss_pct=CONFIG["risk"]["stop_loss_pct"],
+            take_profit_pct=CONFIG["risk"]["take_profit_pct"],
+            poll_interval_seconds=crypto_cfg.get("poll_interval_seconds", 60),
+            use_atr_sizing=sizing_cfg.get("use_atr_sizing", False),
+            position_risk_pct=sizing_cfg.get("position_risk_pct", 0.01),
+            atr_period=sizing_cfg.get("atr_period", 14),
+            atr_multiplier=sizing_cfg.get("atr_multiplier", 2.0),
+        )
 
-    trader = BinanceLiveTrader(config, strat)
-    trader.run(tickers, once=once)
+        interval_tag = f" [{config.interval}]" if config.interval != "1d" else ""
+        click.echo(f"\nBinance Live Trader -- {'LIVE' if live_mode else 'TESTNET'}{interval_tag}")
+        click.echo(f"  Tickers:    {', '.join(tickers)}")
+        click.echo(f"  Strategy:   {strat_name}")
+
+        trader = BinanceLiveTrader(config, strat)
+        trader.run(tickers, once=once)
 
 
 if __name__ == "__main__":
