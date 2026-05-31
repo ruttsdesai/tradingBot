@@ -19,7 +19,7 @@ api:
 # Data Settings
 data:
   stocks:
-    lookback_years: 10          # 2016–2026: covers multiple market cycles
+    lookback_years: 20          # 2006–2026: full 20-year backtest
     interval: "1d"              # daily candles
     default_tickers:
       - AAPL
@@ -196,7 +196,7 @@ risk:
 # Backtesting Settings
 backtest:
   stocks:
-    years: 10
+    years: 20
     initial_capital: 100000.0
     commission_pct: 0.001       # 0.1% commission per trade
   crypto:
