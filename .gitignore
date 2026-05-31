@@ -34,7 +34,7 @@ reports/*.csv
 nul
 
 # Portfolio state (regenerated on each run)
-portfolio_state.json
+state/portfolio_state.json
 
 # Jupyter
 .ipynb_checkpoints/
