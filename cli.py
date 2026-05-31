@@ -222,7 +222,7 @@ def _save_portfolio_state(results: list) -> None:
         combined_cash += p.current_cash
         combined_value += p.total_value
 
-    state_file = os.path.join(os.path.dirname(__file__), "portfolio_state.json")
+    state_file = os.path.join(os.path.dirname(__file__), "state", "portfolio_state.json")
     state = {
         "runs": len(entries),
         "combined_pnl": round(combined_pnl, 2),
@@ -231,6 +231,7 @@ def _save_portfolio_state(results: list) -> None:
         "entries": entries,
         "last_updated": datetime.now().isoformat(),
     }
+    os.makedirs(os.path.dirname(state_file), exist_ok=True)
     with open(state_file, "w") as f:
         json.dump(state, f, indent=2, default=str)
     click.echo(f"Portfolio state saved to {state_file} ({len(entries)} runs)")
@@ -1005,7 +1006,7 @@ def portfolio():
     """View current portfolio state (from saved state file)."""
     import json
 
-    state_file = os.path.join(os.path.dirname(__file__), "portfolio_state.json")
+    state_file = os.path.join(os.path.dirname(__file__), "state", "portfolio_state.json")
 
     if not os.path.exists(state_file):
         click.echo("No saved portfolio state found. Run `paper` or `schedule` first.")
@@ -1172,7 +1173,7 @@ def rebalance(execute, force):
 
     # Load saved portfolio state if available (from paper runs or scheduler)
     import json
-    state_file = os.path.join(os.path.dirname(__file__), "portfolio_state.json")
+    state_file = os.path.join(os.path.dirname(__file__), "state", "portfolio_state.json")
     from engine.portfolio import Portfolio, Position
     from datetime import datetime
 

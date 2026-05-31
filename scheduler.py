@@ -92,7 +92,7 @@ def run_paper_trader(config: dict) -> None:
             print(f"  {sym}: ! {e}")
 
     # Save portfolio state to disk
-    state_file = os.path.join(os.path.dirname(__file__), "portfolio_state.json")
+    state_file = os.path.join(os.path.dirname(__file__), "state", "portfolio_state.json")
     if all_results:
         best = max(all_results, key=lambda r: r.portfolio.total_pnl_pct)
         state = {
@@ -110,6 +110,7 @@ def run_paper_trader(config: dict) -> None:
                 for t, p in best.portfolio.positions.items()
             },
         }
+        os.makedirs(os.path.dirname(state_file), exist_ok=True)
         with open(state_file, "w") as f:
             json.dump(state, f, indent=2, default=str)
 

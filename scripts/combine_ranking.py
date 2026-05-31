@@ -11,7 +11,7 @@ import os
 import sys
 from collections import defaultdict
 
-REPORTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reports")
+REPORTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "reports")
 
 HEADERS = [
     "Rank", "Market", "Strategy", "Ticker", "Return", "Sharpe", "Sortino",

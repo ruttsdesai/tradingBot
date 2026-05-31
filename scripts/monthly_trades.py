@@ -13,7 +13,7 @@ from collections import defaultdict
 from datetime import datetime
 
 # Ensure project root is on path
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from tabulate import tabulate
 
@@ -24,7 +24,7 @@ def load_config():
     import re
 
     load_dotenv(override=True)
-    config_path = os.path.join(os.path.dirname(__file__), "config.yaml")
+    config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config.yaml")
     with open(config_path) as f:
         raw = f.read()
 
