@@ -26,7 +26,7 @@ Usage:
 
 from dataclasses import dataclass, field
 from itertools import product
-from typing import Any, Callable, Optional
+from typing import Any
 
 import pandas as pd
 

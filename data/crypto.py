@@ -4,7 +4,6 @@ Default: 4 years of daily OHLCV data from Binance.
 """
 
 from datetime import datetime, timedelta, timezone
-from typing import Optional
 
 import ccxt
 import pandas as pd

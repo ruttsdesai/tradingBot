@@ -11,8 +11,8 @@ from typing import Optional
 
 import pandas as pd
 
-from .portfolio import Portfolio, Position, Side
-from .risk_manager import RiskAction, RiskCheck, RiskManager
+from .portfolio import Portfolio, Position
+from .risk_manager import RiskAction, RiskManager
 from .paper_trader import compute_atr
 from strategies.base import BaseStrategy, Signal, StrategyResult
 

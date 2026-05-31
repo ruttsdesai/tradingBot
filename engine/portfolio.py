@@ -7,7 +7,6 @@ Tracks cash balance, open positions, trade history, and computes P&L metrics.
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Optional
 
 
 class Side(Enum):

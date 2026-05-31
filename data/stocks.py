@@ -4,7 +4,6 @@ Default: 10 years of daily OHLCV data with automatic retry on failure.
 """
 
 from datetime import datetime, timedelta
-from typing import Optional
 
 import pandas as pd
 import yfinance as yf

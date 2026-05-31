@@ -43,7 +43,7 @@ from strategies.base import BaseStrategy, Signal, StrategyResult
 
 # ---------------------------------------------------------------------------
 # Security ID mapping for NSE stocks
-# Pre-populated with our 10 India tickers.
+# Pre-populated with 10 India tickers (others resolved via fetch_security_list)
 # Users can extend via fetch_security_list() at runtime.
 # ---------------------------------------------------------------------------
 _KNOWN_SECURITY_IDS: dict[str, str] = {
