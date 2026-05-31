@@ -1606,9 +1606,12 @@ def dhan_live(ticker, strategies, all_strategies, once, live_mode, intraday, int
               type=click.Choice(["ma_crossover", "rsi_mean_revert", "macd",
                                  "bollinger_bands", "momentum_breakout"]),
               help="Strategy to use")
+@click.option("--interval", "-i", default=None,
+              type=click.Choice(["1d", "4h", "1h", "15m", "5m", "1m"]),
+              help="Candle interval (default: from config or 1d)")
 @click.option("--once", is_flag=True, help="Run one cycle then exit (default: loop)")
 @click.option("--live", "live_mode", is_flag=True, help="Use Binance LIVE (default: testnet)")
-def crypto_live(ticker, strategy, once, live_mode):
+def crypto_live(ticker, strategy, interval, once, live_mode):
     """Run live crypto trading via Binance (TESTNET by default)."""
     from strategies.ma_crossover import MACrossoverStrategy
     from strategies.rsi_mean_revert import RSIMeanReversionStrategy
@@ -1664,6 +1667,7 @@ def crypto_live(ticker, strategy, once, live_mode):
         api_key=binance_key,
         api_secret=binance_secret,
         testnet=not live_mode,
+        interval=interval or crypto_cfg.get("interval", "1d"),
         initial_capital=crypto_cfg.get("initial_capital", 10_000),
         max_positions=crypto_cfg.get("max_positions", 5),
         max_allocation_pct=crypto_cfg.get("max_allocation_pct", 0.20),
@@ -1676,6 +1680,11 @@ def crypto_live(ticker, strategy, once, live_mode):
         atr_period=sizing_cfg.get("atr_period", 14),
         atr_multiplier=sizing_cfg.get("atr_multiplier", 2.0),
     )
+
+    interval_tag = f" [{config.interval}]" if config.interval != "1d" else ""
+    click.echo(f"\nBinance Live Trader -- {'LIVE' if live_mode else 'TESTNET'}{interval_tag}")
+    click.echo(f"  Tickers:    {', '.join(tickers)}")
+    click.echo(f"  Strategy:   {strategy}")
 
     trader = BinanceLiveTrader(config, strat)
     trader.run(tickers, once=once)

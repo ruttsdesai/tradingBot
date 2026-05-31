@@ -242,6 +242,7 @@ crypto_live_trading:
   max_positions: 5
   max_allocation_pct: 0.20
   poll_interval_seconds: 60           # seconds between evaluation cycles
+  interval: "5m"                      # candle interval: 1d, 4h, 1h, 15m, 5m, 1m
   tickers:                            # Binance trading pairs
     - BTCUSDT
     - ETHUSDT

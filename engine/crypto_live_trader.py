@@ -41,6 +41,7 @@ class CryptoLiveTraderConfig:
     stop_loss_pct: float = 0.05
     take_profit_pct: float = 0.10
     poll_interval_seconds: int = 60
+    interval: str = "1d"  # candle interval: 1d, 4h, 1h, 15m, 5m, 1m
     use_atr_sizing: bool = False
     position_risk_pct: float = 0.01
     atr_period: int = 14
@@ -365,7 +366,7 @@ class BinanceLiveTrader:
         """
         self._init_client()
 
-        data = self.get_historical_klines(tickers, days=120)
+        data = self.get_historical_klines(tickers, days=120, interval=self.config.interval)
         portfolio = self.sync_portfolio()
         self.risk_manager.set_daily_start(portfolio.total_value)
 
