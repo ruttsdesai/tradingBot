@@ -182,7 +182,7 @@ ibkr_live_trading:
 risk:
   max_daily_loss_pct: 0.03      # stop trading if daily loss > 3%
   stop_loss_pct: 0.05           # hard stop-loss at 5% per position
-  take_profit_pct: 0.10         # take profit at 10% per position
+  take_profit_pct: 0.15         # take profit at 15% per position
   max_position_size_pct: 0.20   # max 20% of capital per trade
   # Trailing stop (locks in gains — overrides fixed stop when in profit)
   trailing_stop_enabled: true   # lock in gains by trailing 8% below peak price

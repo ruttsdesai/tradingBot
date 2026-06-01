@@ -161,12 +161,16 @@ def run_live_trader(config: dict) -> None:
 
 
 def run_dhan_trader(config: dict) -> None:
-    """Run the Dhan live trader for India NSE."""
+    """Run the Dhan live trader for India NSE — continuous mode.
+
+    Launches at the scheduled time and runs the continuous polling loop
+    until stopped with Ctrl+C. The trader auto-detects market hours.
+    """
     from engine.dhan_live_trader import DhanLiveTrader, DhanLiveTraderConfig
     from engine.risk_manager import RiskManager
 
     now = datetime.datetime.now()
-    print(f"\n[{now.strftime('%Y-%m-%d %H:%M:%S')}] Running daily Dhan live trade...")
+    print(f"\n[{now.strftime('%Y-%m-%d %H:%M:%S')}] Starting Dhan live trader (continuous)...")
 
     dhan_cfg = config.get("dhan_live_trading", {})
     api_cfg = config.get("api", {})
@@ -251,6 +255,11 @@ def run_dhan_trader(config: dict) -> None:
         poll_interval_seconds=dhan_cfg.get("poll_interval_seconds", 60),
         intraday=dhan_cfg.get("intraday", False),
         intraday_interval=dhan_cfg.get("intraday_interval", "5m"),
+        max_hold_minutes=dhan_cfg.get("max_hold_minutes", 120),
+        min_profit_threshold_pct=dhan_cfg.get("min_profit_threshold_pct", 0.005),
+        min_volatility_pct=dhan_cfg.get("min_volatility_pct", 0.005),
+        stop_buying_minutes=dhan_cfg.get("stop_buying_minutes", 900),
+        force_square_off_minutes=dhan_cfg.get("force_square_off_minutes", 910),
         use_atr_sizing=sizing_cfg.get("use_atr_sizing", False),
         position_risk_pct=sizing_cfg.get("position_risk_pct", 0.01),
         atr_period=sizing_cfg.get("atr_period", 14),
@@ -262,19 +271,19 @@ def run_dhan_trader(config: dict) -> None:
     )
 
     trader = DhanLiveTrader(trader_config, strategies=strategies_list, risk_manager=risk)
-    trader.run(tickers, once=True)
-    print("  + Daily Dhan live run complete.\n")
+    trader.run(tickers, once=False)  # Continuous loop — polls until Ctrl+C
 
 
 def run_crypto_live_trader(config: dict) -> None:
-    """Run the crypto live (Binance) trader."""
+    """Run the crypto live (Binance) trader — continuous mode."""
     from engine.crypto_live_trader import BinanceLiveTrader, CryptoLiveTraderConfig
 
     now = datetime.datetime.now()
-    print(f"\n[{now.strftime('%Y-%m-%d %H:%M:%S')}] Running daily crypto live trade...")
+    print(f"\n[{now.strftime('%Y-%m-%d %H:%M:%S')}] Starting crypto live trader (continuous)...")
 
     crypto_live_cfg = config.get("crypto_live_trading", {})
     api_cfg = config["api"]
+    risk_cfg = config["risk"]
     sizing_cfg = config.get("position_sizing", {})
 
     binance_key = api_cfg.get("binance_api_key", "")
@@ -284,19 +293,45 @@ def run_crypto_live_trader(config: dict) -> None:
         print("  ! BINANCE_API_KEY / BINANCE_SECRET not set. Skipping crypto live run.")
         return
 
-    strategy = _build_strategy(config)
-    tickers = crypto_live_cfg.get("tickers", ["BTCUSDT", "ETHUSDT"])
+    # Build all 5 strategies (multi-strategy, like CLI --all)
+    from strategies.ma_crossover import MACrossoverStrategy
+    from strategies.rsi_mean_revert import RSIMeanReversionStrategy
+    from strategies.macd import MACDStrategy
+    from strategies.bollinger_bands import BollingerBandsStrategy
+    from strategies.momentum_breakout import MomentumBreakoutStrategy
+
+    strat_cfg = config["strategies"]
+    strategies_list = [
+        MACrossoverStrategy(fast_period=strat_cfg["ma_crossover"]["fast_period"],
+                           slow_period=strat_cfg["ma_crossover"]["slow_period"]),
+        RSIMeanReversionStrategy(rsi_period=strat_cfg["rsi_mean_revert"]["rsi_period"],
+                                 oversold_threshold=strat_cfg["rsi_mean_revert"]["oversold_threshold"],
+                                 overbought_threshold=strat_cfg["rsi_mean_revert"]["overbought_threshold"]),
+        MACDStrategy(fast_period=strat_cfg["macd"]["fast_period"],
+                    slow_period=strat_cfg["macd"]["slow_period"],
+                    signal_period=strat_cfg["macd"]["signal_period"]),
+        BollingerBandsStrategy(period=strat_cfg["bollinger_bands"]["period"],
+                              num_std=strat_cfg["bollinger_bands"]["num_std"]),
+        MomentumBreakoutStrategy(lookback=strat_cfg["momentum_breakout"]["lookback"],
+                                exit_sma=strat_cfg["momentum_breakout"]["exit_sma"]),
+    ]
+
+    tickers = crypto_live_cfg.get("tickers", ["BTCUSDT", "ETHUSDT", "SOLUSDT"])
 
     trader_config = CryptoLiveTraderConfig(
         api_key=binance_key,
         api_secret=binance_secret,
         testnet=crypto_live_cfg.get("testnet", True),
+        interval=crypto_live_cfg.get("interval", "5m"),
         initial_capital=crypto_live_cfg.get("initial_capital", 10_000),
         max_positions=crypto_live_cfg.get("max_positions", 5),
         max_allocation_pct=crypto_live_cfg.get("max_allocation_pct", 0.20),
-        max_daily_loss_pct=config["risk"]["max_daily_loss_pct"],
-        stop_loss_pct=config["risk"]["stop_loss_pct"],
-        take_profit_pct=config["risk"]["take_profit_pct"],
+        max_daily_loss_pct=risk_cfg["max_daily_loss_pct"],
+        stop_loss_pct=risk_cfg["stop_loss_pct"],
+        take_profit_pct=risk_cfg["take_profit_pct"],
+        trailing_stop_enabled=risk_cfg.get("trailing_stop_enabled", True),
+        trailing_stop_pct=risk_cfg.get("trailing_stop_pct", 0.08),
+        trailing_stop_atr_mult=risk_cfg.get("trailing_stop_atr_mult", 2.0),
         poll_interval_seconds=crypto_live_cfg.get("poll_interval_seconds", 60),
         use_atr_sizing=sizing_cfg.get("use_atr_sizing", False),
         position_risk_pct=sizing_cfg.get("position_risk_pct", 0.01),
@@ -304,9 +339,8 @@ def run_crypto_live_trader(config: dict) -> None:
         atr_multiplier=sizing_cfg.get("atr_multiplier", 2.0),
     )
 
-    trader = BinanceLiveTrader(trader_config, strategy)
-    trader.run(tickers, once=True)
-    print("  + Daily crypto live run complete.\n")
+    trader = BinanceLiveTrader(trader_config, strategies=strategies_list)
+    trader.run(tickers, once=False)  # Continuous loop — 24/7 crypto
 
 
 # Map mode name -> handler function

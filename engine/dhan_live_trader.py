@@ -58,6 +58,17 @@ _KNOWN_SECURITY_IDS: dict[str, str] = {
     "HINDUNILVR": "1394",
     "SBIN": "3045",
     "LT": "8028",
+    "KOTAKBANK": "1922",
+    "AXISBANK": "5900",
+    "BAJFINANCE": "317",
+    "MARUTI": "10999",
+    "SUNPHARMA": "3351",
+    "ASIANPAINT": "236",
+    "NESTLEIND": "17963",
+    "WIPRO": "3787",
+    "TITAN": "3506",
+    "M&M": "2031",
+    "HCLTECH": "7229",
 }
 
 
@@ -108,7 +119,7 @@ class DhanLiveTraderConfig:
     max_allocation_pct: float = 0.20
     max_daily_loss_pct: float = 0.03
     stop_loss_pct: float = 0.05
-    take_profit_pct: float = 0.10
+    take_profit_pct: float = 0.15
     poll_interval_seconds: int = 60
     intraday: bool = False
     intraday_interval: str = "5m"
@@ -176,6 +187,8 @@ class DhanLiveTrader:
         self._dhan = None
         self._security_id_cache: dict[str, str] = dict(_KNOWN_SECURITY_IDS)
         self._notifier = None
+        self._sl_orders: dict[str, str] = {}   # ticker (base) -> stop-loss order_id
+        self._tp_orders: dict[str, str] = {}   # ticker (base) -> take-profit order_id
         self._init_notifier()
 
     # ------------------------------------------------------------------
@@ -720,6 +733,160 @@ class DhanLiveTrader:
             return None
 
     # ------------------------------------------------------------------
+    # Stop-Loss / Take-Profit Orders (broker-level)
+    # ------------------------------------------------------------------
+
+    def submit_stop_loss(self, ticker: str, quantity: float, trigger_price: float) -> dict | None:
+        """Submit a STOP_LOSS_MARKET sell order to protect a long position.
+
+        The order triggers a market sell when the price drops to trigger_price.
+        Placed as a DAY order with the same product type (INTRA/CNC) as the parent.
+        """
+        dhan = self._init_client()
+        qty = int(quantity)
+        if qty <= 0:
+            return None
+
+        trigger = round(trigger_price, 2)
+        try:
+            sid = self._lookup_security_id(ticker)
+            product_type = dhan.INTRA if self.config.intraday else dhan.CNC
+
+            response = dhan.place_order(
+                security_id=sid,
+                exchange_segment=dhan.NSE,
+                transaction_type=dhan.SELL,
+                quantity=qty,
+                order_type=dhan.SLM,
+                product_type=product_type,
+                price=0,                # market execution when triggered
+                trigger_price=trigger,
+                validity=dhan.DAY,
+            )
+
+            if isinstance(response, dict) and response.get("status") == "failure":
+                err = response.get("remarks", {})
+                err_msg = err.get("error_message", str(err)) if isinstance(err, dict) else str(err)
+                print(f"  [DHAN] Stop-loss order rejected for {ticker}: {err_msg}")
+                return None
+
+            order_data = self._unwrap(response)
+            if not isinstance(order_data, dict):
+                order_data = {}
+            order_id = order_data.get("orderId", order_data.get("order_id", ""))
+            print(f"  [DHAN] SL   {ticker} x{qty} STOP_LOSS_MARKET @ trigger={trigger:.2f}  [id={order_id}]")
+            return {
+                "id": str(order_id),
+                "symbol": ticker,
+                "qty": qty,
+                "side": "SELL",
+                "type": "SLM",
+                "trigger_price": trigger,
+            }
+        except Exception as e:
+            print(f"  [DHAN] Stop-loss order failed for {ticker}: {e}")
+            return None
+
+    def submit_take_profit(self, ticker: str, quantity: float, limit_price: float) -> dict | None:
+        """Submit a LIMIT sell order to take profit at a target price.
+
+        The order sells at limit_price or better. Placed as a DAY order.
+        """
+        dhan = self._init_client()
+        qty = int(quantity)
+        if qty <= 0:
+            return None
+
+        limit = round(limit_price, 2)
+        try:
+            sid = self._lookup_security_id(ticker)
+            product_type = dhan.INTRA if self.config.intraday else dhan.CNC
+
+            response = dhan.place_order(
+                security_id=sid,
+                exchange_segment=dhan.NSE,
+                transaction_type=dhan.SELL,
+                quantity=qty,
+                order_type=dhan.LIMIT,
+                product_type=product_type,
+                price=limit,            # limit sell price
+                validity=dhan.DAY,
+            )
+
+            if isinstance(response, dict) and response.get("status") == "failure":
+                err = response.get("remarks", {})
+                err_msg = err.get("error_message", str(err)) if isinstance(err, dict) else str(err)
+                print(f"  [DHAN] Take-profit order rejected for {ticker}: {err_msg}")
+                return None
+
+            order_data = self._unwrap(response)
+            if not isinstance(order_data, dict):
+                order_data = {}
+            order_id = order_data.get("orderId", order_data.get("order_id", ""))
+            print(f"  [DHAN] TP   {ticker} x{qty} LIMIT @ {limit:.2f}  [id={order_id}]")
+            return {
+                "id": str(order_id),
+                "symbol": ticker,
+                "qty": qty,
+                "side": "SELL",
+                "type": "LIMIT",
+                "limit_price": limit,
+            }
+        except Exception as e:
+            print(f"  [DHAN] Take-profit order failed for {ticker}: {e}")
+            return None
+
+    def cancel_order(self, order_id: str) -> bool:
+        """Cancel an order by ID. Returns True on success."""
+        if not order_id:
+            return False
+        dhan = self._init_client()
+        try:
+            dhan.cancel_order(order_id)
+            return True
+        except Exception as e:
+            print(f"  [DHAN] Failed to cancel order {order_id}: {e}")
+            return False
+
+    def cancel_sl_tp_orders(self, ticker: str) -> None:
+        """Cancel both stop-loss and take-profit orders for a ticker."""
+        base = strip_ns(ticker)
+
+        sl_id = self._sl_orders.pop(base, None)
+        if sl_id:
+            if self.cancel_order(sl_id):
+                print(f"  [DHAN] Cancelled SL order for {ticker} [id={sl_id}]")
+
+        tp_id = self._tp_orders.pop(base, None)
+        if tp_id:
+            if self.cancel_order(tp_id):
+                print(f"  [DHAN] Cancelled TP order for {ticker} [id={tp_id}]")
+
+    def _place_sl_tp_orders(self, ticker: str, base: str, quantity: int, entry_price: float) -> None:
+        """Place both stop-loss and take-profit orders after a BUY fill.
+
+        Args:
+            ticker: Full ticker with .NS suffix (e.g., "SBIN.NS")
+            base: Base symbol without suffix (e.g., "SBIN")
+            quantity: Position quantity (int)
+            entry_price: Filled entry price
+        """
+        sl_price = entry_price * (1.0 - self.config.stop_loss_pct)
+        tp_price = entry_price * (1.0 + self.config.take_profit_pct)
+
+        sl_order = self.submit_stop_loss(ticker, quantity, sl_price)
+        if sl_order:
+            self._sl_orders[base] = sl_order["id"]
+        else:
+            print(f"  [DHAN] WARNING: Failed to place SL for {ticker} — relying on polling-based monitoring")
+
+        tp_order = self.submit_take_profit(ticker, quantity, tp_price)
+        if tp_order:
+            self._tp_orders[base] = tp_order["id"]
+        else:
+            print(f"  [DHAN] WARNING: Failed to place TP for {ticker} — relying on polling-based monitoring")
+
+    # ------------------------------------------------------------------
     # Strategy Execution
     # ------------------------------------------------------------------
 
@@ -753,6 +920,7 @@ class DhanLiveTrader:
                     base = strip_ns(ticker)
                     if base in portfolio.positions:
                         pos = portfolio.positions[base]
+                        self.cancel_sl_tp_orders(ticker)
                         order = self.submit_sell(ticker, pos.quantity)
                         if order:
                             pnl = (order.get("filled_avg_price", 0) - pos.avg_entry_price) * pos.quantity
@@ -864,12 +1032,15 @@ class DhanLiveTrader:
                             )
                         )
                         # Mark position in portfolio so next strategy sees it
+                        entry_price = order.get("filled_avg_price") or price
                         portfolio.positions[base] = Position(
                             ticker=base,
                             quantity=order["qty"],
-                            avg_entry_price=order.get("filled_avg_price") or price,
+                            avg_entry_price=entry_price,
                             entry_date=datetime.now(),
                         )
+                        # Place broker-level stop-loss and take-profit orders
+                        self._place_sl_tp_orders(ticker, base, order["qty"], entry_price)
                         # Stop processing further strategies — position just opened
                         break
 
@@ -877,6 +1048,9 @@ class DhanLiveTrader:
                     pos = portfolio.positions.get(base)
                     if pos is None or pos.quantity <= 0:
                         continue
+
+                    # Cancel SL/TP orders before selling (they're no longer needed)
+                    self.cancel_sl_tp_orders(ticker)
 
                     order = self.submit_sell(ticker, pos.quantity)
                     if order:
@@ -905,6 +1079,7 @@ class DhanLiveTrader:
                 risk = self.risk_manager.check_sell(portfolio, base, price)
                 if risk.action == RiskAction.STOP_LOSS:
                     pos = portfolio.positions[base]
+                    self.cancel_sl_tp_orders(ticker)
                     order = self.submit_sell(ticker, pos.quantity)
                     if order:
                         print(f"  [DHAN] STOP-LOSS {ticker}: {risk.reason}")
@@ -914,6 +1089,7 @@ class DhanLiveTrader:
                         )
                 elif risk.action == RiskAction.TAKE_PROFIT:
                     pos = portfolio.positions[base]
+                    self.cancel_sl_tp_orders(ticker)
                     order = self.submit_sell(ticker, pos.quantity)
                     if order:
                         print(f"  [DHAN] TAKE-PROFIT {ticker}: {risk.reason}")
@@ -923,6 +1099,7 @@ class DhanLiveTrader:
                         )
                 elif risk.action == RiskAction.TRAILING_STOP:
                     pos = portfolio.positions[base]
+                    self.cancel_sl_tp_orders(ticker)
                     order = self.submit_sell(ticker, pos.quantity)
                     if order:
                         print(f"  [DHAN] TRAILING-STOP {ticker}: {risk.reason}")
@@ -945,6 +1122,7 @@ class DhanLiveTrader:
                 if hold_minutes >= self.config.max_hold_minutes:
                     pnl_pct = (price - pos.avg_entry_price) / pos.avg_entry_price if pos.avg_entry_price > 0 else 0.0
                     if pnl_pct < self.config.min_profit_threshold_pct:
+                        self.cancel_sl_tp_orders(ticker)
                         order = self.submit_sell(ticker, pos.quantity)
                         if order:
                             pnl = (order.get("filled_avg_price", 0) - pos.avg_entry_price) * pos.quantity if order.get("filled_avg_price") and pos.avg_entry_price > 0 else None

@@ -1,7 +1,7 @@
 # Chat Memory — tradingBot
 
-> Saved: 2026-05-26
-> Sessions: Dhan live trading integration, all-strategy paper test, Telegram notifications
+> Updated: 2026-06-01
+> Sessions: Dhan SL/TP, crypto multi-strategy, scheduler continuous, security IDs, live trading
 
 ---
 
@@ -30,48 +30,85 @@
 - `availabelBalance` (note: Dhan's API has a typo — "availabel" not "available")
 - `utilizedAmount`, `sodLimit`, `withdrawableBalance`, `dhanClientId`
 
-### 3. Dhan Sandbox Requires Static IP (Non-Negotiable)
-- Sandbox URL: `https://sandbox.dhan.co/v2` — **hangs without whitelisted IP**
-- Use production API + paper trading engine for testing
+### 3. Dhan SDK Order Type Constants
+- `dhan.MARKET`, `dhan.LIMIT`, `dhan.SLM` (Stop-Loss Market), `dhan.SL` (Stop-Loss Limit)
+- `dhan.BUY`, `dhan.SELL`, `dhan.INTRA`, `dhan.CNC`, `dhan.NSE`, `dhan.DAY`
+- There is NO `dhan.STOP_LOSS_MARKET` — use `dhan.SLM` instead
 
-### 4. Dhan Data API is a Paid Add-On
-- `historical_daily_data()` returns `DH-902: Not subscribed`
-- Workaround: use `yfinance` via `data.stocks.fetch_stock_data()` for OHLC data
+### 4. Dhan SL/TP: place_order() signature
+```python
+dhan.place_order(
+    security_id, exchange_segment, transaction_type, quantity,
+    order_type, product_type,
+    price=0, trigger_price=0, disclosed_quantity=0, validity='DAY'
+)
+```
+- STOP_LOSS_MARKET: `order_type=dhan.SLM, trigger_price=X, price=0`
+- LIMIT sell (take-profit): `order_type=dhan.LIMIT, price=X`
+- Cancel: `dhan.cancel_order(order_id)`
 
-### 5. Token Expiry & load_dotenv
+### 5. Binance Order Type Constants
+```python
+from binance.enums import (
+    SIDE_BUY, SIDE_SELL,
+    ORDER_TYPE_MARKET, ORDER_TYPE_LIMIT, ORDER_TYPE_STOP_LOSS_LIMIT,
+    TIME_IN_FORCE_GTC
+)
+```
+- STOP_LOSS_LIMIT: `type=ORDER_TYPE_STOP_LOSS_LIMIT, price=stop_limit, stopPrice=trigger`
+- Cancel: `client.cancel_order(symbol=ticker, orderId=order_id)`
+
+### 6. Token Expiry & load_dotenv
 - Dhan access tokens expire every **24 hours**
-- `load_dotenv(override=True)` required in `cli.py` line 33 (empty shell env vars won't be overwritten otherwise)
+- `load_dotenv(override=True)` required in cli.py line 33
 
-### 6. Strategy Name Warning
+### 7. Strategy Name Warning
 Wrong: `rsi_mean_reversion` → Correct: `rsi_mean_revert`
 
 ---
 
-## 📁 Files Changed
+## 🆕 Changes Made This Session (2026-06-01)
 
-### `cli.py`
-- Line 33: `load_dotenv(override=True)`
-- `str(client_id)` cast for Dhan SDK
-- Telegram: reads `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` from env, passes to config
+### 1. All 21 NSE Security IDs (was only 10)
+`engine/dhan_live_trader.py` → `_KNOWN_SECURITY_IDS`:
+```
+RELIANCE:2885  TCS:11536  HDFCBANK:1333  INFY:1594  ICICIBANK:2179
+BHARTIARTL:2718  ITC:1660  HINDUNILVR:1394  SBIN:3045  LT:8028
+KOTAKBANK:1922  AXISBANK:5900  BAJFINANCE:317  MARUTI:10999
+SUNPHARMA:3351  ASIANPAINT:236  NESTLEIND:17963  WIPRO:3787
+TITAN:3506  M&M:2031  HCLTECH:7229
+```
 
-### `engine/dhan_live_trader.py` (major)
-- **`_unwrap()`** — extracts `data` from wrapped API responses
-- **`_init_notifier()` / `_notify()`** — Telegram integration
-- **All API calls fixed:** unwrap + camelCase fields for fund_limits, positions, holdings, quote_data, orders
-- **Failure checking:** `status == "failure"` in order responses
-- **Data source:** switched to `yfinance` for historical bars (free)
-- **`str(client_id)`** cast, removed broken sandbox URL monkey-patch
+### 2. Broker-Level SL/TP Orders — Dhan (`engine/dhan_live_trader.py`)
+- **New methods**: `submit_stop_loss()`, `submit_take_profit()`, `cancel_order()`, `cancel_sl_tp_orders()`, `_place_sl_tp_orders()`
+- After every BUY fill: places `STOP_LOSS_MARKET` at -5% + `LIMIT` sell at +15%
+- Before every SELL/exit: cancels SL/TP orders first
+- Risk manager SL/TP monitoring remains as fallback
+- Caveat: on restart, existing positions from `sync_portfolio()` won't get SL/TP orders (software monitoring still works)
 
-### `engine/notifier.py` (NEW)
-- `TelegramNotifier` class — fire-and-forget via `requests`
-- Format helpers: `format_buy_msg`, `format_sell_msg`, `format_sl_msg`, `format_tp_msg`, `format_session_start`, `format_error`
-- Notifications for: session start (continuous mode only), BUY, SELL, STOP-LOSS, TAKE-PROFIT
+### 3. Broker-Level SL/TP Orders — Crypto (`engine/crypto_live_trader.py`)
+- Same pattern as Dhan: `submit_stop_loss()` (Binance STOP_LOSS_LIMIT), `submit_take_profit()` (LIMIT), cancel on exit
+- Uses Binance LOT_SIZE/PRICE_FILTER for proper quantity/price rounding
+- Trailing stop wired through (params added to config)
 
-### `config.yaml`
-- Added `telegram_bot_token: ${TELEGRAM_BOT_TOKEN}` and `telegram_chat_id: ${TELEGRAM_CHAT_ID}` in `api:` section
+### 4. Crypto Multi-Strategy Refactor (`engine/crypto_live_trader.py`)
+- `BinanceLiveTrader.__init__` now accepts `strategies: list[BaseStrategy]` (like Dhan)
+- `run_once()` iterates all strategies per ticker, first-signal-wins pattern
+- `CryptoLiveTraderConfig` added: `trailing_stop_enabled`, `trailing_stop_pct`, `trailing_stop_atr_mult`
+- CLI `crypto-live --all` now creates one trader with all 5 strategies (not 5 separate)
 
-### `.env`
-- Contains: `DHAN_CLIENT_ID`, `DHAN_ACCESS_TOKEN`, `TELEGRAM_BOT_TOKEN=`, `TELEGRAM_CHAT_ID=`
+### 5. Scheduler: Continuous Mode (`scheduler.py`)
+- `run_dhan_trader()`: `once=True` → `once=False` (continuous loop, polls until Ctrl+C)
+- Added missing Dhan config fields: `max_hold_minutes`, `min_profit_threshold_pct`, `min_volatility_pct`, `stop_buying_minutes`, `force_square_off_minutes`
+- `run_crypto_live_trader()`: now uses all 5 strategies + trailing stop + 5m interval
+
+### 6. Config Updates (`config.yaml`)
+- `risk.take_profit_pct`: 0.10 → 0.15
+- `scheduler.mode`: "dhan"
+
+### 7. Position Checker (`scripts/check_positions.py`)
+- Quick script to fetch live Dhan account balance, positions, holdings, unrealized P&L
+- Run: `python scripts/check_positions.py`
 
 ---
 
@@ -81,33 +118,34 @@ Wrong: `rsi_mean_reversion` → Correct: `rsi_mean_revert`
 ```
 CLI (cli.py)
   ↓
-DhanLiveTrader (engine/dhan_live_trader.py)
-  ├── Account:   dhan.get_fund_limits()   → _unwrap() → camelCase keys
-  ├── Orders:    dhan.place_order()       → _unwrap() → check status
-  ├── Prices:    dhan.quote_data()        → _unwrap() → NSE_EQ entries
-  ├── History:   data.stocks.fetch_stock_data() → yfinance (NOT Dhan Data API)
-  └── Alerts:    TelegramNotifier.send()  → Telegram Bot API
+DhanLiveTrader / BinanceLiveTrader
+  ├── Account:   get_fund_limits() / get_account()
+  ├── Orders:    place_order() — MARKET, SLM, LIMIT
+  ├── SL/TP:     STOP_LOSS_MARKET + LIMIT placed after BUY, cancelled before SELL
+  ├── Prices:    quote_data() / get_symbol_ticker()
+  ├── History:   yfinance (Dhan) / get_historical_klines (Binance)
+  └── Alerts:    TelegramNotifier (Bot API or Telethon user account)
 ```
 
-### Security ID Mapping
+### Trading Loop (Continuous Mode)
 ```
-RELIANCE:2885  TCS:11536  HDFCBANK:1333  INFY:1594  ICICIBANK:2179
-BHARTIARTL:2718  ITC:1660  HINDUNILVR:1394  SBIN:3045  LT:8028
+while True:
+    if market closed: sleep(60), continue
+    run_once():
+        sync_portfolio()          # fetch positions from broker
+        for ticker in tickers:
+            for strat in strategies:
+                if BUY signal:
+                    submit_buy()              → MKT order
+                    _place_sl_tp_orders()     → SLM + LIMIT orders
+                    break                     # first strategy wins
+                elif SELL signal:
+                    cancel_sl_tp_orders()
+                    submit_sell()             → MKT order
+                    break
+            check_sell()  # SL/TP/trailing-stop monitoring (fallback)
+        sleep(poll_interval)
 ```
-
----
-
-## 📊 All-Strategy Paper Test Results (India NSE, 10yr, $100k)
-
-| Strategy | SBIN.NS | ICICIBANK.NS | BHARTIARTL.NS | **Combined** |
-|---|---|---|---|---|
-| **MACD** | +36.16% (Sharpe 0.82) | +45.09% (Sharpe 1.24) | +24.22% (Sharpe 0.64) | **+35.16%** |
-| **Bollinger Bands** | +30.12% (Sharpe 0.65) | +34.25% (Sharpe 0.85) | +32.43% (Sharpe 0.86) | **+32.27%** |
-| **MA Crossover** | +9.37% (Sharpe 0.34) | +7.81% (Sharpe 0.30) | +14.57% (Sharpe 0.52) | **+10.58%** |
-| **RSI Mean Rev** | +10.74% (Sharpe 0.34) | +7.25% (Sharpe 0.32) | +1.78% (Sharpe 0.09) | **+6.59%** |
-| **Momentum Break** | +3.60% (Sharpe 0.14) | +4.77% (Sharpe 0.20) | +0.12% (Sharpe 0.02) | **+2.83%** |
-
-**Winner: MACD** (highest returns on all tickers, best Sharpe). **Runner-up: Bollinger Bands** (good across the board, higher win rates).
 
 ---
 
@@ -115,18 +153,25 @@ BHARTIARTL:2718  ITC:1660  HINDUNILVR:1394  SBIN:3045  LT:8028
 
 ```bash
 # Paper trading (safe, local backtest)
-python cli.py paper -t SBIN.NS -t ICICIBANK.NS -t BHARTIARTL.NS -s macd
+python cli.py paper -t SBIN.NS -t ICICIBANK.NS -t BHARTIARTL.NS -s all
 
-# Dhan live — single evaluation
-python cli.py dhan-live --live -s macd --once
+# Dhan live — single test cycle
+python cli.py dhan-live --all --live --once
 
-# Dhan live — continuous polling (with Telegram alerts if configured)
-python cli.py dhan-live --live -s macd
+# Dhan live — CONTINUOUS (polls 60s, Mon-Fri 09:15-15:30 IST)
+python cli.py dhan-live --all --live
 
-# Telegram setup:
-# 1. Create bot via @BotFather → get token
-# 2. Get chat ID via @userinfobot
-# 3. Add to .env: TELEGRAM_BOT_TOKEN=...  TELEGRAM_CHAT_ID=...
+# Crypto live — CONTINUOUS (24/7)
+python cli.py crypto-live -t BTCUSDT -t ETHUSDT -t SOLUSDT --all
+
+# Scheduler — auto-launches Dhan at 09:15 IST daily
+python cli.py schedule
+
+# Check live positions & P&L
+python scripts/check_positions.py
+
+# Backtest all markets
+python cli.py backtest
 ```
 
 ---
@@ -136,17 +181,25 @@ python cli.py dhan-live --live -s macd
 1. **Dhan sandbox requires static IP** → production + paper engine for testing
 2. **Dhan Data API is paid** → using yfinance for historical data
 3. **Tokens expire every 24hrs** → must regenerate from developer portal
-4. **Order placement may fail with `Invalid IP`** if IP not whitelisted
-5. **NSE equity only** — no F&O, no crypto via Dhan
-6. **Integer share quantities only** — fractional qty truncated
-7. **Telegram alerts only in continuous mode** — `--once` mode skips session-start notification
+4. **No SL/TP on bot restart** — existing positions synced from broker won't get new SL/TP orders (software monitoring works as fallback)
+5. **Scheduler: single mode only** — runs either Dhan OR crypto, not both simultaneously
+6. **Dangling SL/TP on broker hit** — if broker executes SL between cycles, TP order lingers until expiry
+7. **NSE equity only** — no F&O, no crypto via Dhan
+8. **Integer share quantities only** — fractional qty truncated
 
 ---
 
-## 🔮 For Next Session
+## 📁 Key Files
 
-- [ ] Fill in `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in `.env`
-- [ ] Register static IP with Dhan for order execution
-- [ ] Add token refresh automation
-- [ ] Test Bollinger Bands live (2nd best strategy, higher win rates)
-- [ ] Add auto-save pattern: when context gets long, save to CHAT_MEMORY.md
+| File | Purpose |
+|---|---|
+| `cli.py` | CLI entry point, all commands |
+| `config.yaml` | Strategy params, risk, tickers, schedules |
+| `engine/dhan_live_trader.py` | Dhan live trading (NSE) — SL/TP, multi-strategy |
+| `engine/crypto_live_trader.py` | Binance live trading — SL/TP, multi-strategy |
+| `engine/risk_manager.py` | Risk checks, SL/TP monitoring (fallback) |
+| `engine/notifier.py` | Telegram notifications |
+| `scheduler.py` | Daily scheduler — continuous mode for dhan/crypto |
+| `scripts/check_positions.py` | Quick position/P&L checker |
+| `.env` | API keys (Dhan, Binance, Alpaca, Telegram) |
+| `data/dhan_securities.csv` | Full NSE security ID mapping |

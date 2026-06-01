@@ -1637,7 +1637,7 @@ def crypto_live(ticker, strategy, all_strategies, interval, once, live_mode):
 
     tickers = list(ticker) if ticker else crypto_cfg.get("tickers", ["BTCUSDT", "ETHUSDT", "SOLUSDT"])
 
-    # Build strategy list (support --all for all 5 strategies)
+    # Build strategy list (support --all for all 5 strategies in one trader)
     strat_cfg = CONFIG["strategies"]
     sizing_cfg = CONFIG.get("position_sizing", {})
 
@@ -1646,58 +1646,66 @@ def crypto_live(ticker, strategy, all_strategies, interval, once, live_mode):
     else:
         strategy_names = [strategy]
 
+    strat_list: list = []
     for strat_name in strategy_names:
         if strat_name == "ma_crossover":
             mc = strat_cfg["ma_crossover"]
-            strat = MACrossoverStrategy(fast_period=mc["fast_period"], slow_period=mc["slow_period"])
+            strat_list.append(MACrossoverStrategy(fast_period=mc["fast_period"], slow_period=mc["slow_period"]))
         elif strat_name == "rsi_mean_revert":
             rsi = strat_cfg["rsi_mean_revert"]
-            strat = RSIMeanReversionStrategy(
+            strat_list.append(RSIMeanReversionStrategy(
                 rsi_period=rsi["rsi_period"],
                 oversold_threshold=rsi["oversold_threshold"],
                 overbought_threshold=rsi["overbought_threshold"],
-            )
+            ))
         elif strat_name == "macd":
             mc = strat_cfg["macd"]
-            strat = MACDStrategy(
+            strat_list.append(MACDStrategy(
                 fast_period=mc["fast_period"], slow_period=mc["slow_period"],
                 signal_period=mc["signal_period"],
-            )
+            ))
         elif strat_name == "bollinger_bands":
             bb = strat_cfg["bollinger_bands"]
-            strat = BollingerBandsStrategy(period=bb["period"], num_std=bb["num_std"])
+            strat_list.append(BollingerBandsStrategy(period=bb["period"], num_std=bb["num_std"]))
         elif strat_name == "momentum_breakout":
             mb = strat_cfg["momentum_breakout"]
-            strat = MomentumBreakoutStrategy(lookback=mb["lookback"], exit_sma=mb["exit_sma"])
+            strat_list.append(MomentumBreakoutStrategy(lookback=mb["lookback"], exit_sma=mb["exit_sma"]))
         else:
             click.echo(f"Unknown strategy: {strat_name}")
-            continue
 
-        config = CryptoLiveTraderConfig(
-            api_key=binance_key,
-            api_secret=binance_secret,
-            testnet=not live_mode,
-            interval=interval or crypto_cfg.get("interval", "1d"),
-            initial_capital=crypto_cfg.get("initial_capital", 10_000),
-            max_positions=crypto_cfg.get("max_positions", 5),
-            max_allocation_pct=crypto_cfg.get("max_allocation_pct", 0.20),
-            max_daily_loss_pct=CONFIG["risk"]["max_daily_loss_pct"],
-            stop_loss_pct=CONFIG["risk"]["stop_loss_pct"],
-            take_profit_pct=CONFIG["risk"]["take_profit_pct"],
-            poll_interval_seconds=crypto_cfg.get("poll_interval_seconds", 60),
-            use_atr_sizing=sizing_cfg.get("use_atr_sizing", False),
-            position_risk_pct=sizing_cfg.get("position_risk_pct", 0.01),
-            atr_period=sizing_cfg.get("atr_period", 14),
-            atr_multiplier=sizing_cfg.get("atr_multiplier", 2.0),
-        )
+    if not strat_list:
+        click.echo("ERROR: No valid strategies specified.")
+        return
 
-        interval_tag = f" [{config.interval}]" if config.interval != "1d" else ""
-        click.echo(f"\nBinance Live Trader -- {'LIVE' if live_mode else 'TESTNET'}{interval_tag}")
-        click.echo(f"  Tickers:    {', '.join(tickers)}")
-        click.echo(f"  Strategy:   {strat_name}")
+    config = CryptoLiveTraderConfig(
+        api_key=binance_key,
+        api_secret=binance_secret,
+        testnet=not live_mode,
+        interval=interval or crypto_cfg.get("interval", "1d"),
+        initial_capital=crypto_cfg.get("initial_capital", 10_000),
+        max_positions=crypto_cfg.get("max_positions", 5),
+        max_allocation_pct=crypto_cfg.get("max_allocation_pct", 0.20),
+        max_daily_loss_pct=CONFIG["risk"]["max_daily_loss_pct"],
+        stop_loss_pct=CONFIG["risk"]["stop_loss_pct"],
+        take_profit_pct=CONFIG["risk"]["take_profit_pct"],
+        trailing_stop_enabled=CONFIG["risk"].get("trailing_stop_enabled", True),
+        trailing_stop_pct=CONFIG["risk"].get("trailing_stop_pct", 0.08),
+        trailing_stop_atr_mult=CONFIG["risk"].get("trailing_stop_atr_mult", 2.0),
+        poll_interval_seconds=crypto_cfg.get("poll_interval_seconds", 60),
+        use_atr_sizing=sizing_cfg.get("use_atr_sizing", False),
+        position_risk_pct=sizing_cfg.get("position_risk_pct", 0.01),
+        atr_period=sizing_cfg.get("atr_period", 14),
+        atr_multiplier=sizing_cfg.get("atr_multiplier", 2.0),
+    )
 
-        trader = BinanceLiveTrader(config, strat)
-        trader.run(tickers, once=once)
+    interval_tag = f" [{config.interval}]" if config.interval != "1d" else ""
+    strategy_names_str = ', '.join(s.name for s in strat_list)
+    click.echo(f"\nBinance Live Trader -- {'LIVE' if live_mode else 'TESTNET'}{interval_tag}")
+    click.echo(f"  Tickers:    {', '.join(tickers)}")
+    click.echo(f"  Strategies: {len(strat_list)} ({strategy_names_str})")
+
+    trader = BinanceLiveTrader(config, strategies=strat_list)
+    trader.run(tickers, once=once)
 
 
 if __name__ == "__main__":
