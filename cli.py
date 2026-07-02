@@ -237,29 +237,17 @@ def _save_portfolio_state(results: list) -> None:
     click.echo(f"Portfolio state saved to {state_file} ({len(entries)} runs)")
 
 
-def _run_backtest_market(label: str, tickers: list[str], years: int, capital: float,
-                          commission_pct: float, strategy: str, risk,
-                          strat_cfg: dict, csv_dir: str = "") -> None:
-    """Run backtest for a single market. Shared by all market flags.
+def _build_strategy_list(strategy: str, strat_cfg: dict) -> list[tuple[str, object]]:
+    """Build [(display_name, strategy_instance)] from config.
 
-    If csv_dir is provided, writes one CSV per strategy to backtest_{label}_{strategy}.csv.
+    `strategy` is a single strategy key or "all". Returns fresh instances,
+    so call this once per backtest run (strategies carry internal state).
     """
-    from data.stocks import fetch_multiple_stocks
     from strategies.ma_crossover import MACrossoverStrategy
     from strategies.rsi_mean_revert import RSIMeanReversionStrategy
     from strategies.macd import MACDStrategy
     from strategies.bollinger_bands import BollingerBandsStrategy
     from strategies.momentum_breakout import MomentumBreakoutStrategy
-    from backtest.runner import BacktestRunner
-
-    click.echo(f"\n*** Backtesting {label} ({years}yr, {len(tickers)} tickers) ***\n")
-    data = fetch_multiple_stocks(tickers, years=years)
-
-    # Filter out tickers that failed to fetch
-    data = {t: df for t, df in data.items() if not df.empty}
-    if not data:
-        click.echo("  No data fetched -- skipping.\n")
-        return
 
     strategies_to_run = []
     if strategy in ("ma_crossover", "all"):
@@ -285,6 +273,29 @@ def _run_backtest_market(label: str, tickers: list[str], years: int, capital: fl
         mb = strat_cfg["momentum_breakout"]
         strategies_to_run.append(("Momentum Breakout", MomentumBreakoutStrategy(
             lookback=mb["lookback"], exit_sma=mb["exit_sma"])))
+    return strategies_to_run
+
+
+def _run_backtest_market(label: str, tickers: list[str], years: int, capital: float,
+                          commission_pct: float, strategy: str, risk,
+                          strat_cfg: dict, csv_dir: str = "") -> None:
+    """Run backtest for a single market. Shared by all market flags.
+
+    If csv_dir is provided, writes one CSV per strategy to backtest_{label}_{strategy}.csv.
+    """
+    from data.stocks import fetch_multiple_stocks
+    from backtest.runner import BacktestRunner
+
+    click.echo(f"\n*** Backtesting {label} ({years}yr, {len(tickers)} tickers) ***\n")
+    data = fetch_multiple_stocks(tickers, years=years)
+
+    # Filter out tickers that failed to fetch
+    data = {t: df for t, df in data.items() if not df.empty}
+    if not data:
+        click.echo("  No data fetched -- skipping.\n")
+        return
+
+    strategies_to_run = _build_strategy_list(strategy, strat_cfg)
 
     for sname, s in strategies_to_run:
         runner = BacktestRunner(s, capital, commission_pct, risk)
@@ -335,11 +346,6 @@ def backtest(usa, india, canada, usa_short, crypto, strategy, years, csv_dir):
     from data.crypto import fetch_multiple_crypto
     from backtest.runner import BacktestRunner
     from engine.risk_manager import RiskManager
-    from strategies.ma_crossover import MACrossoverStrategy
-    from strategies.rsi_mean_revert import RSIMeanReversionStrategy
-    from strategies.macd import MACDStrategy
-    from strategies.bollinger_bands import BollingerBandsStrategy
-    from strategies.momentum_breakout import MomentumBreakoutStrategy
 
     bg_cfg = CONFIG["backtest"]
     risk_cfg = CONFIG["risk"]
@@ -418,31 +424,7 @@ def backtest(usa, india, canada, usa_short, crypto, strategy, years, csv_dir):
         if not data:
             click.echo("  No crypto data fetched.\n")
         else:
-            # Build crypto strategies (same pattern as _run_backtest_market)
-            crypto_strategies = []
-            if strategy in ("ma_crossover", "all"):
-                mc = strat_cfg["ma_crossover"]
-                crypto_strategies.append(("MA Crossover", MACrossoverStrategy(
-                    fast_period=mc["fast_period"], slow_period=mc["slow_period"])))
-            if strategy in ("rsi_mean_revert", "all"):
-                rsi_cfg = strat_cfg["rsi_mean_revert"]
-                crypto_strategies.append(("RSI Mean Reversion", RSIMeanReversionStrategy(
-                    rsi_period=rsi_cfg["rsi_period"],
-                    oversold_threshold=rsi_cfg["oversold_threshold"],
-                    overbought_threshold=rsi_cfg["overbought_threshold"])))
-            if strategy in ("macd", "all"):
-                mc = strat_cfg["macd"]
-                crypto_strategies.append(("MACD", MACDStrategy(
-                    fast_period=mc["fast_period"], slow_period=mc["slow_period"],
-                    signal_period=mc["signal_period"])))
-            if strategy in ("bollinger_bands", "all"):
-                bb = strat_cfg["bollinger_bands"]
-                crypto_strategies.append(("Bollinger Bands", BollingerBandsStrategy(
-                    period=bb["period"], num_std=bb["num_std"])))
-            if strategy in ("momentum_breakout", "all"):
-                mb = strat_cfg["momentum_breakout"]
-                crypto_strategies.append(("Momentum Breakout", MomentumBreakoutStrategy(
-                    lookback=mb["lookback"], exit_sma=mb["exit_sma"])))
+            crypto_strategies = _build_strategy_list(strategy, strat_cfg)
 
             for sname, s in crypto_strategies:
                 runner = BacktestRunner(s, crypto_capital, crypto_comm, risk)
@@ -463,6 +445,153 @@ def backtest(usa, india, canada, usa_short, crypto, strategy, years, csv_dir):
                             writer.writeheader()
                             writer.writerows(rows)
                         click.echo(f"  [CSV] Exported {len(rows)} rows -> {csv_path}")
+
+
+@cli.command("backtest-intraday")
+@click.option("--ticker", "-t", multiple=True,
+              help="Tickers to test (default: dhan_live_trading.tickers from config)")
+@click.option("--strategy", "-s", default="all",
+              type=click.Choice(["ma_crossover", "rsi_mean_revert", "macd",
+                                 "bollinger_bands", "momentum_breakout", "all"]),
+              help="Strategy to backtest")
+@click.option("--days", "-d", default=55, type=int,
+              help="Calendar days of history (yfinance caps 5m/15m at ~60, 1m at 7)")
+@click.option("--interval", "-i", default="5m",
+              type=click.Choice(["1m", "5m", "15m", "30m", "1h"]),
+              help="Candle interval")
+@click.option("--capital", default=None, type=float, help="Override initial capital")
+@click.option("--csv", "csv_path", is_flag=False, default="",
+              help="Export ranked results to this CSV file")
+def backtest_intraday(ticker, strategy, days, interval, capital, csv_path):
+    """Day-trading backtest: intraday bars + the live NSE intraday rules.
+
+    Simulates exactly what `dhan-live` does in intraday mode:
+    no BUYs after 15:00 IST, forced square-off at 15:10 (never holds
+    overnight), ATR volatility filter, and time-exits for stale positions.
+
+    NOTE: yfinance only serves ~60 days of 5m history (7 days of 1m), so
+    this covers weeks, not years — treat it as a reality check of the
+    day-trading config, not a long-term validation.
+
+    Examples:
+      python cli.py backtest-intraday                       # all Dhan tickers, all strategies
+      python cli.py backtest-intraday -t SBIN.NS -s macd    # one combo
+      python cli.py backtest-intraday --csv reports/intraday.csv
+    """
+    from tabulate import tabulate
+    from data.stocks import fetch_stock_data
+    from backtest.intraday_runner import IntradayBacktester
+    from engine.risk_manager import RiskManager
+
+    dhan_cfg = CONFIG.get("dhan_live_trading", {})
+    risk_cfg = CONFIG["risk"]
+    strat_cfg = CONFIG["strategies"]
+
+    tickers = list(ticker) or dhan_cfg.get("tickers", ["SBIN.NS", "ICICIBANK.NS", "BHARTIARTL.NS"])
+    if interval == "1m" and days > 7:
+        click.echo("  [WARN] yfinance caps 1m data at 7 days — clamping.")
+        days = 7
+    initial_capital = capital or CONFIG["paper_trading"]["initial_capital"]
+
+    click.echo(f"\n*** Intraday (day-trading) backtest: {len(tickers)} tickers, "
+               f"{interval} bars, ~{days} days ***")
+    click.echo(f"    Rules: stop-buy 15:00 | square-off 15:10 | time-exit "
+               f"{dhan_cfg.get('max_hold_minutes', 120)}m | "
+               f"SL {risk_cfg['stop_loss_pct']:.0%} / TP {risk_cfg['take_profit_pct']:.0%}\n")
+
+    # Fetch data once per ticker
+    data: dict = {}
+    for t in tickers:
+        try:
+            df = fetch_stock_data(t, years=days / 365.0, interval=interval)
+            if df is not None and not df.empty:
+                data[t] = df
+            else:
+                click.echo(f"  [WARN] No data for {t}, skipping")
+        except Exception as e:
+            click.echo(f"  [WARN] Failed to fetch {t}: {e}")
+    if not data:
+        click.echo("  No intraday data fetched — aborting.")
+        return
+
+    rows = []
+    for t, df in data.items():
+        n_days = len({ts.date() for ts in df.index})
+        # Fresh strategy + risk manager per run — both carry per-run state
+        for sname, strat in _build_strategy_list(strategy, strat_cfg):
+            risk = RiskManager(
+                max_positions=1,          # single-ticker sim
+                max_allocation_pct=1.0,   # full capital per sim (per-ticker isolation)
+                max_daily_loss_pct=risk_cfg["max_daily_loss_pct"],
+                stop_loss_pct=risk_cfg["stop_loss_pct"],
+                take_profit_pct=risk_cfg["take_profit_pct"],
+                trailing_stop_enabled=risk_cfg.get("trailing_stop_enabled", False),
+                trailing_stop_pct=risk_cfg.get("trailing_stop_pct", 0.08),
+                trailing_stop_atr_mult=risk_cfg.get("trailing_stop_atr_mult", 2.0),
+            )
+            bt = IntradayBacktester(
+                strat,
+                risk_manager=risk,
+                initial_capital=initial_capital,
+                commission_pct=CONFIG["backtest"]["stocks"]["commission_pct"],
+                stop_buying_minutes=dhan_cfg.get("stop_buying_minutes", 900),
+                force_square_off_minutes=dhan_cfg.get("force_square_off_minutes", 910),
+                max_hold_minutes=dhan_cfg.get("max_hold_minutes", 120),
+                min_profit_threshold_pct=dhan_cfg.get("min_profit_threshold_pct", 0.005),
+                min_volatility_pct=dhan_cfg.get("min_volatility_pct", 0.005),
+            )
+            result = bt.run(df, ticker=t)
+            rows.append({
+                "Ticker": t,
+                "Strategy": sname,
+                "Return": result.portfolio.total_pnl_pct * 100,
+                "P&L": result.portfolio.total_pnl,
+                "Trades": result.total_trades,
+                "Trades/Day": result.total_trades / n_days if n_days else 0.0,
+                "Win Rate": result.win_rate * 100,
+                "Max DD": result.portfolio.max_drawdown * 100,
+                "Days": n_days,
+            })
+
+    rows.sort(key=lambda r: r["Return"], reverse=True)
+    table = [
+        [i + 1, r["Ticker"], r["Strategy"], f"{r['Return']:+.2f}%", f"{r['P&L']:+,.0f}",
+         r["Trades"], f"{r['Trades/Day']:.1f}", f"{r['Win Rate']:.0f}%",
+         f"{r['Max DD']:.1f}%", r["Days"]]
+        for i, r in enumerate(rows)
+    ]
+    click.echo(tabulate(
+        table,
+        headers=["#", "Ticker", "Strategy", "Return", "P&L", "Trades",
+                 "Trades/Day", "Win Rate", "Max DD", "Days"],
+        tablefmt="rounded_outline",
+    ))
+
+    # Per-strategy averages across tickers
+    by_strat: dict = {}
+    for r in rows:
+        by_strat.setdefault(r["Strategy"], []).append(r)
+    click.echo("\n  -- Strategy averages (across tickers) --")
+    avg_rows = []
+    for sname, srows in by_strat.items():
+        avg_rows.append([
+            sname,
+            f"{sum(x['Return'] for x in srows) / len(srows):+.2f}%",
+            f"{sum(x['Win Rate'] for x in srows) / len(srows):.0f}%",
+            f"{sum(x['Trades'] for x in srows) / len(srows):.0f}",
+        ])
+    avg_rows.sort(key=lambda r: float(r[1].rstrip("%")), reverse=True)
+    click.echo(tabulate(avg_rows, headers=["Strategy", "Avg Return", "Avg Win Rate", "Avg Trades"],
+                        tablefmt="rounded_outline"))
+
+    if csv_path:
+        import csv as csv_mod
+        os.makedirs(os.path.dirname(csv_path) or ".", exist_ok=True)
+        with open(csv_path, "w", newline="") as f:
+            writer = csv_mod.DictWriter(f, fieldnames=list(rows[0].keys()))
+            writer.writeheader()
+            writer.writerows(rows)
+        click.echo(f"\n  [CSV] Exported {len(rows)} rows -> {csv_path}")
 
 
 @cli.command()

@@ -145,6 +145,16 @@ up by pair (`BTCUSDT`) — after a restart the bot never saw its own positions
   daemon thread (24/7); Dhan trader is scheduled daily at `run_time`
 - Crypto thread crash is caught and logged, doesn't kill the scheduler
 
+### 5. Intraday (Day-Trading) Backtest (`backtest/intraday_runner.py`, CLI `backtest-intraday`)
+- `IntradayBacktester(PaperTrader)` — simulates the live Dhan intraday rules on 5m bars:
+  no BUYs after 15:00 IST, forced square-off at 15:10 (never holds overnight),
+  ATR volatility filter, time-exit for stale positions
+- CLI: `python cli.py backtest-intraday` (defaults: Dhan tickers, all 5 strategies, 5m, ~55 days)
+- **The 20-year backtest numbers are daily-bar (swing) results — they do NOT
+  validate day trading.** yfinance caps 5m history at ~60 days, so intraday
+  backtests are a short-window reality check only
+- Also extracted `_build_strategy_list()` helper in cli.py (was duplicated 2x)
+
 ---
 
 ## 🏗️ Architecture

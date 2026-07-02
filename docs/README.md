@@ -137,7 +137,8 @@ See **[COMMANDS.md](COMMANDS.md)** for a full grouped cheat sheet. Quick referen
 | Command | Purpose | Mode |
 |---------|---------|------|
 | `paper` | Paper trading simulation | Offline |
-| `backtest` | Historical backtesting (USA/India/Canada/Crypto) | Offline |
+| `backtest` | Historical backtesting (USA/India/Canada/Crypto, daily bars) | Offline |
+| `backtest-intraday` | Day-trading backtest (5m bars + NSE intraday rules, ~60 days) | Offline |
 | `benchmark` | Rank all strategies by metrics | Offline |
 | `walk-forward` | Walk-forward optimization | Offline |
 | `grid-search` | Exhaustive parameter search | Offline |

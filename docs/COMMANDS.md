@@ -38,6 +38,16 @@ python cli.py backtest --csv ./reports
 ```
 
 ```bash
+# Day-trading backtest: 5m bars + live NSE intraday rules
+# (no buys after 15:00, square-off 15:10, time-exits, volatility filter)
+# NOTE: yfinance caps 5m history at ~60 days — weeks of data, not years
+python cli.py backtest-intraday                        # all Dhan tickers, all strategies
+python cli.py backtest-intraday -t SBIN.NS -s macd     # one ticker + strategy
+python cli.py backtest-intraday -i 15m -d 55           # 15-minute bars
+python cli.py backtest-intraday --csv reports/intraday.csv
+```
+
+```bash
 # Benchmark: rank all strategies by Sharpe/Sortino/Return
 python cli.py benchmark                  # stocks + crypto
 python cli.py benchmark --stocks         # stocks only
