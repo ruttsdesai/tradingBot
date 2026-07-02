@@ -130,6 +130,9 @@ class PaperTraderResult:
     end_date: datetime
     strategy_name: str
     equity_curve: list[float] = field(default_factory=list)
+    # Per-bar equity (populated only when PaperTrader(record_bar_equity=True);
+    # used for intraday charts where the daily equity curve is too coarse)
+    bar_equity: list[float] = field(default_factory=list)
 
     @property
     def sharpe_ratio(self) -> float:
@@ -187,6 +190,7 @@ class PaperTrader:
         position_risk_pct: float = 0.01,
         atr_period: int = 14,
         atr_multiplier: float = 2.0,
+        record_bar_equity: bool = False,
     ):
         self.strategy = strategy
         self.risk_manager = risk_manager or RiskManager()
@@ -196,6 +200,7 @@ class PaperTrader:
         self.position_risk_pct = position_risk_pct
         self.atr_period = atr_period
         self.atr_multiplier = atr_multiplier
+        self.record_bar_equity = record_bar_equity
         self._atr: np.ndarray | None = None
 
     def run(
@@ -225,6 +230,7 @@ class PaperTrader:
 
         # Track daily equity curve for Sharpe/Sortino/DD-duration
         equity_curve: list[float] = []
+        bar_equity: list[float] = []
         prev_date: Optional[datetime] = None
         last_recorded_date: Optional[datetime] = None
 
@@ -270,6 +276,9 @@ class PaperTrader:
 
             portfolio.update_drawdown()
 
+            if self.record_bar_equity:
+                bar_equity.append(portfolio.total_value)
+
         # Prepend initial capital so the curve captures the first day's return
         if equity_curve:
             equity_curve.insert(0, self.initial_capital)
@@ -284,7 +293,9 @@ class PaperTrader:
         equity_curve.append(portfolio.total_value)
 
         # Compute trade stats
-        return self._build_result(portfolio, ticker, df, equity_curve)
+        result = self._build_result(portfolio, ticker, df, equity_curve)
+        result.bar_equity = bar_equity
+        return result
 
     def _handle_buy(
         self,

@@ -1708,5 +1708,192 @@ def crypto_live(ticker, strategy, all_strategies, interval, once, live_mode):
     trader.run(tickers, once=once)
 
 
+def _day_trade_strategy_from_config(dt_cfg: dict):
+    """Build a ParallelDayTradeStrategy from the day_trading config section."""
+    from strategies.parallel_day_trade import ParallelDayTradeStrategy
+
+    return ParallelDayTradeStrategy(
+        entry_threshold=dt_cfg.get("entry_threshold", 0.2),
+        exit_threshold=dt_cfg.get("exit_threshold", -0.2),
+        perf_window=dt_cfg.get("perf_window", 10),
+        perf_sensitivity=dt_cfg.get("perf_sensitivity", 100.0),
+        min_weight=dt_cfg.get("min_weight", 0.25),
+        max_weight=dt_cfg.get("max_weight", 3.0),
+        min_trades_for_weight=dt_cfg.get("min_trades_for_weight", 3),
+        square_off=dt_cfg.get("square_off", True),
+        no_entry_last_bars=dt_cfg.get("no_entry_last_bars", 6),
+        min_volatility_pct=dt_cfg.get("min_volatility_pct", 0.0),
+        trend_filter_period=dt_cfg.get("trend_filter_period", 200),
+    )
+
+
+def _day_trade_risk_manager(dt_cfg: dict):
+    """Build the intraday-tight RiskManager for day trading."""
+    from engine.risk_manager import RiskManager
+
+    r = dt_cfg.get("risk", {}) or {}
+    return RiskManager(
+        max_positions=r.get("max_positions", 1),
+        max_allocation_pct=r.get("max_allocation_pct", 0.95),
+        max_daily_loss_pct=r.get("max_daily_loss_pct", 0.02),
+        stop_loss_pct=r.get("stop_loss_pct", 0.01),
+        take_profit_pct=r.get("take_profit_pct", 0.025),
+        trailing_stop_enabled=r.get("trailing_stop_enabled", True),
+        trailing_stop_pct=r.get("trailing_stop_pct", 0.008),
+    )
+
+
+def _load_day_trade_data(ticker: str, interval: str, days, csv_file: str):
+    """Load intraday OHLCV bars from Yahoo Finance or a local CSV."""
+    import pandas as pd
+
+    if csv_file:
+        df = pd.read_csv(csv_file, index_col=0, parse_dates=True)
+        df.columns = [c.lower() for c in df.columns]
+        missing = {"open", "high", "low", "close"} - set(df.columns)
+        if missing:
+            raise click.ClickException(f"CSV missing columns: {sorted(missing)}")
+        if "volume" not in df.columns:
+            df["volume"] = 0
+        return df[["open", "high", "low", "close", "volume"]]
+
+    from data.stocks import fetch_intraday_data
+    return fetch_intraday_data(ticker, interval=interval, days=days)
+
+
+@cli.command(name="day-trade")
+@click.option("--ticker", "-t", default="AAPL", help="Symbol to day trade (one chart)")
+@click.option("--interval", "-i", default=None,
+              type=click.Choice(["1m", "2m", "5m", "15m", "30m", "1h"]),
+              help="Intraday candle interval (default from config: 5m)")
+@click.option("--days", "-d", default=None, type=int,
+              help="Days of intraday history (default: Yahoo's max for interval)")
+@click.option("--capital", default=None, type=float, help="Initial capital")
+@click.option("--commission", default=None, type=float,
+              help="Commission+slippage per side (decimal, e.g. 0.0005)")
+@click.option("--csv-file", default="", help="Backtest a local OHLCV CSV instead of fetching")
+@click.option("--compare", is_flag=True,
+              help="Also run each strategy standalone + buy & hold for comparison")
+@click.option("--chart/--no-chart", default=True, help="Save the parallel-strategy chart PNG")
+@click.option("--signal", "signal_only", is_flag=True,
+              help="Print the CURRENT buy/sell/hold decision for the latest bar and exit")
+def day_trade(ticker, interval, days, capital, commission, csv_file, compare, chart, signal_only):
+    """Day-trade ONE chart with 5 strategies running in parallel.
+
+    All strategies vote on every bar; votes are weighted by each strategy's
+    recent profitability on this exact chart. The bot buys on weighted
+    consensus, exits on consensus loss / stop / take-profit, and always
+    squares off before the session close (no overnight positions).
+    """
+    from tabulate import tabulate
+    from engine.paper_trader import PaperTrader
+    from strategies.base import Signal
+
+    dt_cfg = CONFIG.get("day_trading", {}) or {}
+    interval = interval or dt_cfg.get("interval", "5m")
+    capital = capital if capital is not None else dt_cfg.get("initial_capital", 100_000.0)
+    commission = commission if commission is not None else dt_cfg.get("commission_pct", 0.0005)
+
+    click.echo("\n=== Parallel Day-Trade Bot ===\n")
+    click.echo(f"  Ticker:     {ticker}")
+    click.echo(f"  Interval:   {interval}")
+    click.echo(f"  Capital:    ${capital:,.0f}")
+    click.echo(f"  Commission: {commission:.4%} per side\n")
+
+    click.echo(f"  Fetching {ticker} {interval} bars ... ", nl=False)
+    try:
+        df = _load_day_trade_data(ticker, interval, days or dt_cfg.get("days"), csv_file)
+    except Exception as e:
+        raise click.ClickException(f"data fetch failed: {e}")
+    sessions = len(set(d.date() for d in df.index))
+    click.echo(f"+ {len(df)} bars across {sessions} sessions "
+               f"({df.index[0]} -> {df.index[-1]})\n")
+
+    strategy = _day_trade_strategy_from_config(dt_cfg)
+    trader = PaperTrader(
+        strategy=strategy,
+        risk_manager=_day_trade_risk_manager(dt_cfg),
+        initial_capital=capital,
+        commission_pct=commission,
+        record_bar_equity=True,
+    )
+    result = trader.run(df, ticker=ticker)
+
+    # ── Current-signal mode: report the decision on the latest bar ────
+    if signal_only:
+        h = strategy.history
+        decision = h["decision"][-1]
+        score = h["score"][-1]
+        click.echo(f"  Latest bar: {h['timestamp'][-1]}  close=${df['close'].iloc[-1]:,.2f}")
+        click.echo(f"  Consensus score: {score:+.3f} "
+                   f"(entry >= {strategy.entry_threshold:+.2f}, "
+                   f"exit <= {strategy.exit_threshold:+.2f})\n")
+        rows = [[r["strategy"], r["stance"], f"{r['weight']:.2f}",
+                 r["virtual_trades"], f"{r['recent_avg_return']:+.3%}",
+                 f"{r['recent_win_rate']:.0%}"]
+                for r in strategy.performance_report()]
+        click.echo(tabulate(rows, headers=["Strategy", "Stance", "Weight",
+                                           "V-Trades", "Recent Avg Ret", "Recent WR"],
+                            tablefmt="grid"))
+        name = {Signal.BUY: "BUY", Signal.SELL: "SELL", Signal.HOLD: "HOLD"}[decision]
+        click.echo(f"\n  >>> CURRENT DECISION: {name} <<<")
+        if decision == Signal.HOLD:
+            state = "LONG (holding)" if strategy._in_position else "FLAT (waiting)"
+            click.echo(f"      Position state: {state}")
+        return
+
+    # ── Backtest report ────────────────────────────────────────────────
+    click.echo(result.summary())
+
+    click.echo("\n=== Parallel Strategy Panel (final state) ===\n")
+    rows = [[r["strategy"], r["virtual_trades"], f"{r['recent_avg_return']:+.3%}",
+             f"{r['recent_win_rate']:.0%}", f"{r['weight']:.2f}"]
+            for r in strategy.performance_report()]
+    click.echo(tabulate(rows, headers=["Strategy", "Virtual Trades", "Recent Avg Ret",
+                                       "Recent WR", "Final Weight"], tablefmt="grid"))
+
+    bh_return = df["close"].iloc[-1] / df["close"].iloc[0] - 1.0
+    click.echo(f"\n  Bot return:        {result.portfolio.total_pnl_pct:+.2%}")
+    click.echo(f"  Buy & hold return: {bh_return:+.2%}")
+
+    # ── Optional: compare against each strategy standalone ────────────
+    if compare:
+        from strategies.parallel_day_trade import build_intraday_strategies
+
+        click.echo("\n=== Standalone Strategy Comparison (same risk limits) ===\n")
+        comp_rows = [["ParallelDayTrade (combined)", result.total_trades,
+                      f"{result.win_rate:.1%}",
+                      f"{result.portfolio.total_pnl_pct:+.2%}",
+                      f"{result.portfolio.max_drawdown:+.2%}",
+                      f"{result.sharpe_ratio:.2f}"]]
+        for solo in build_intraday_strategies():
+            solo_trader = PaperTrader(
+                strategy=solo,
+                risk_manager=_day_trade_risk_manager(dt_cfg),
+                initial_capital=capital,
+                commission_pct=commission,
+            )
+            r = solo_trader.run(df.copy(), ticker=ticker)
+            comp_rows.append([solo.name, r.total_trades, f"{r.win_rate:.1%}",
+                              f"{r.portfolio.total_pnl_pct:+.2%}",
+                              f"{r.portfolio.max_drawdown:+.2%}",
+                              f"{r.sharpe_ratio:.2f}"])
+        comp_rows.append(["Buy & Hold", 1, "-", f"{bh_return:+.2%}", "-", "-"])
+        click.echo(tabulate(comp_rows,
+                            headers=["Strategy", "Trades", "Win Rate", "Return",
+                                     "Max DD", "Sharpe"], tablefmt="grid"))
+
+    # ── Chart: everything on one figure ────────────────────────────────
+    if chart:
+        from engine.charts import plot_parallel_day_trade_chart
+
+        out_dir = CONFIG.get("charts", {}).get("output_dir", "charts")
+        safe = ticker.replace("/", "_").replace(".", "_")
+        path = os.path.join(out_dir, f"{safe}_day_trade_{interval}.png")
+        saved = plot_parallel_day_trade_chart(df, result, strategy, save_path=path)
+        if saved:
+            click.echo(f"\n  [Chart] Saved parallel-strategy chart -> {saved}")
+
+
 if __name__ == "__main__":
     cli()

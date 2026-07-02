@@ -76,6 +76,40 @@ python cli.py data -t AAPL -y 10
 
 ---
 
+## ⚡ Parallel Day Trading (5 strategies, one chart, one decision)
+
+All 5 strategies run in parallel on every intraday bar of a single symbol.
+Votes are weighted by each strategy's recent profitability on that exact
+chart; the bot BUYs on weighted consensus, SELLs on consensus loss /
+stop-loss / take-profit, and always squares off before the session close.
+
+```bash
+# Backtest 60 days of 5m bars on AAPL, save the parallel-strategy chart
+python cli.py day-trade -t AAPL
+
+# Different symbol / interval / history depth
+python cli.py day-trade -t NVDA -i 15m -d 30
+python cli.py day-trade -t RELIANCE.NS -i 5m
+
+# Compare the combined engine vs each strategy standalone + buy & hold
+python cli.py day-trade -t AAPL --compare
+
+# What would the bot do RIGHT NOW? (run every few minutes during market hours)
+python cli.py day-trade -t AAPL --signal --no-chart
+
+# Backtest a local OHLCV CSV (offline)
+python cli.py day-trade -t MYDATA --csv-file data/synthetic/uptrend_5m.csv
+
+# Offline validation on synthetic regimes (also a regression test)
+python scripts/validate_day_trade.py
+python scripts/validate_day_trade.py --save-csv   # writes data/synthetic/*.csv
+```
+
+Tune thresholds, adaptive weighting, square-off, and intraday risk limits in
+the `day_trading:` section of `config.yaml`.
+
+---
+
 ## 🔴 Live Trading — India NSE (Dhan)
 
 ```bash

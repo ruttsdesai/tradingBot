@@ -248,6 +248,35 @@ crypto_live_trading:
     - ETHUSDT
     - SOLUSDT
 
+# Parallel Day Trading — all 5 strategies run in parallel on ONE chart and
+# merge into a single BUY/SELL decision via adaptive performance-weighted voting.
+# Run with: python cli.py day-trade --ticker AAPL --interval 5m
+day_trading:
+  interval: "5m"                # intraday candle interval: 1m, 2m, 5m, 15m, 30m, 1h
+  days: 60                      # days of intraday history (Yahoo caps 5m at 60)
+  initial_capital: 100000.0
+  commission_pct: 0.0005        # 0.05% per side (commission + slippage estimate)
+  entry_threshold: 0.2          # consensus score to BUY (0.2 = weighted 60/40 bullish)
+  exit_threshold: -0.2          # consensus score to SELL (weighted majority bearish)
+  perf_window: 10               # recent virtual trades used to weight each strategy
+  perf_sensitivity: 100.0       # weight = 1 + sensitivity * avg virtual return
+  min_weight: 0.25              # losing strategies are muted, never silenced
+  max_weight: 3.0               # winning strategies get up to 3x voice
+  min_trades_for_weight: 3      # virtual trades before weight deviates from 1.0
+  square_off: true              # force-exit at session close (no overnight risk)
+  no_entry_last_bars: 6         # no new entries in last N bars (30 min on 5m)
+  min_volatility_pct: 0.0       # skip entries if ATR/price below this (0 = off)
+  trend_filter_period: 200      # only enter longs above this EMA (0 = off);
+                                # keeps the bot out of persistent downtrends
+  risk:                         # intraday-tight risk limits (vs 5%/15% daily)
+    max_positions: 1            # one symbol, one chart
+    max_allocation_pct: 0.95    # deploy nearly all capital into the single position
+    max_daily_loss_pct: 0.02    # stop trading for the day after -2%
+    stop_loss_pct: 0.01         # 1% hard stop per position
+    take_profit_pct: 0.025      # 2.5% take profit
+    trailing_stop_enabled: true
+    trailing_stop_pct: 0.008    # trail 0.8% below intraday peak
+
 # Ensemble Strategy (votes across multiple strategies for higher conviction)
 ensemble:
   min_buy_votes: 2              # how many strategies must agree to BUY (out of 5)
