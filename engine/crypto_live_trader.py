@@ -99,6 +99,7 @@ class BinanceLiveTrader:
         self._symbol_info_cache: dict[str, dict] = {}  # cached LOT_SIZE etc.
         self._sl_orders: dict[str, str] = {}  # ticker -> stop-loss order_id
         self._tp_orders: dict[str, str] = {}  # ticker -> take-profit order_id
+        self._oco_symbols: set[str] = set()   # tickers whose SL/TP legs form one OCO list
 
     def _init_client(self) -> None:
         """Lazily initialize Binance client."""
@@ -195,9 +196,12 @@ class BinanceLiveTrader:
             qty = bal["free"] + bal["locked"]
             price = prices.get(asset, 0)
             if qty > 0 and price > 0:
-                portfolio.update_price(asset, price)
-                portfolio.positions[asset] = Position(
-                    ticker=asset,
+                # Key positions by trading pair (BTCUSDT), matching how
+                # run_once() and the SL/TP order maps refer to them.
+                symbol = f"{asset}USDT"
+                portfolio.update_price(symbol, price)
+                portfolio.positions[symbol] = Position(
+                    ticker=symbol,
                     quantity=qty,
                     avg_entry_price=price,  # Binance doesn't expose avg entry easily
                     entry_date=datetime.now(),
@@ -372,6 +376,73 @@ class BinanceLiveTrader:
     # Stop-Loss / Take-Profit Orders (broker-level)
     # ------------------------------------------------------------------
 
+    def _get_symbol_filters(self, ticker: str) -> tuple[float, float, int, int]:
+        """Return (step_size, tick_size, qty_precision, price_precision) for a symbol."""
+        info = self._get_symbol_info(ticker)
+        step_size = 0.000001
+        tick_size = 0.01
+        for f in info.get("filters", []):
+            if f["filterType"] == "LOT_SIZE":
+                step_size = float(f["stepSize"])
+            elif f["filterType"] == "PRICE_FILTER":
+                tick_size = float(f.get("tickSize", 0.01))
+        qty_precision = len(str(step_size).rstrip("0").split(".")[-1]) if "." in str(step_size) else 0
+        price_precision = len(str(tick_size).rstrip("0").split(".")[-1]) if "." in str(tick_size) else 0
+        return step_size, tick_size, qty_precision, price_precision
+
+    def submit_oco_sell(
+        self, ticker: str, quantity: float, trigger_price: float, tp_limit_price: float
+    ) -> dict | None:
+        """Submit an OCO sell: take-profit LIMIT_MAKER + stop-loss STOP_LOSS_LIMIT.
+
+        Preferred over two separate orders because (a) Binance spot locks the
+        quantity for the first sell order, so a second standalone order fails
+        for insufficient balance, and (b) the exchange cancels the surviving
+        leg automatically when the other executes — no dangling sibling.
+
+        Returns {"sl_id": ..., "tp_id": ...} or None on failure.
+        """
+        self._init_client()
+        from binance.enums import SIDE_SELL, TIME_IN_FORCE_GTC
+
+        if quantity <= 0:
+            return None
+
+        step_size, _, precision, price_precision = self._get_symbol_filters(ticker)
+        qty = round(quantity - (quantity % step_size), precision)
+        if qty < step_size:
+            return None
+
+        trigger = round(trigger_price, price_precision)
+        stop_limit = round(trigger * 0.995, price_precision)
+        limit = round(tp_limit_price, price_precision)
+
+        try:
+            resp = self._client.create_oco_order(
+                symbol=ticker,
+                side=SIDE_SELL,
+                quantity=qty,
+                price=limit,
+                stopPrice=trigger,
+                stopLimitPrice=stop_limit,
+                stopLimitTimeInForce=TIME_IN_FORCE_GTC,
+            )
+        except Exception as e:
+            print(f"  [BINANCE] OCO order failed for {ticker}: {e}")
+            return None
+
+        sl_id = ""
+        tp_id = ""
+        for report in resp.get("orderReports", []):
+            oid = str(report.get("orderId", ""))
+            if report.get("type") == "STOP_LOSS_LIMIT":
+                sl_id = oid
+            else:  # LIMIT_MAKER take-profit leg
+                tp_id = oid
+        print(f"  [BINANCE] OCO  {ticker} x{qty} TP @ {limit:.{price_precision}f} / "
+              f"SL trigger @ {trigger:.{price_precision}f}  [sl={sl_id} tp={tp_id}]")
+        return {"sl_id": sl_id, "tp_id": tp_id}
+
     def submit_stop_loss(self, ticker: str, quantity: float, trigger_price: float) -> dict | None:
         """Submit a STOP_LOSS_LIMIT sell order. When trigger_price is hit,
         sells at stop_limit_price (slightly below trigger for faster fill)."""
@@ -381,17 +452,7 @@ class BinanceLiveTrader:
         if quantity <= 0:
             return None
 
-        info = self._get_symbol_info(ticker)
-        step_size = 0.000001
-        tick_size = 0.01
-        for f in info.get("filters", []):
-            if f["filterType"] == "LOT_SIZE":
-                step_size = float(f["stepSize"])
-            elif f["filterType"] == "PRICE_FILTER":
-                tick_size = float(f.get("tickSize", 0.01))
-
-        precision = len(str(step_size).rstrip("0").split(".")[-1]) if "." in str(step_size) else 0
-        price_precision = len(str(tick_size).rstrip("0").split(".")[-1]) if "." in str(tick_size) else 0
+        step_size, _, precision, price_precision = self._get_symbol_filters(ticker)
         qty = round(quantity - (quantity % step_size), precision)
         if qty < step_size:
             return None
@@ -425,17 +486,7 @@ class BinanceLiveTrader:
         if quantity <= 0:
             return None
 
-        info = self._get_symbol_info(ticker)
-        step_size = 0.000001
-        tick_size = 0.01
-        for f in info.get("filters", []):
-            if f["filterType"] == "LOT_SIZE":
-                step_size = float(f["stepSize"])
-            elif f["filterType"] == "PRICE_FILTER":
-                tick_size = float(f.get("tickSize", 0.01))
-
-        precision = len(str(step_size).rstrip("0").split(".")[-1]) if "." in str(step_size) else 0
-        price_precision = len(str(tick_size).rstrip("0").split(".")[-1]) if "." in str(tick_size) else 0
+        step_size, _, precision, price_precision = self._get_symbol_filters(ticker)
         qty = round(quantity - (quantity % step_size), precision)
         if qty < step_size:
             return None
@@ -470,23 +521,58 @@ class BinanceLiveTrader:
             print(f"  [BINANCE] Failed to cancel order {order_id}: {e}")
             return False
 
+    def get_order_status(self, ticker: str, order_id: str) -> str:
+        """Fetch the current status of an order (NEW, FILLED, CANCELED, ...).
+
+        Returns "" if the order cannot be looked up.
+        """
+        if not order_id:
+            return ""
+        self._init_client()
+        try:
+            order = self._client.get_order(symbol=ticker, orderId=order_id)
+            return str(order.get("status", "")).upper()
+        except Exception as e:
+            print(f"  [BINANCE] Could not fetch status of order {order_id}: {e}")
+            return ""
+
     def cancel_sl_tp_orders(self, ticker: str) -> None:
         """Cancel both stop-loss and take-profit orders for a ticker."""
-        sl_id = self._sl_orders.pop(ticker, None)
-        if sl_id:
-            if self.cancel_order(sl_id, ticker):
-                print(f"  [BINANCE] Cancelled SL order for {ticker} [id={sl_id}]")
+        is_oco = ticker in self._oco_symbols
+        self._oco_symbols.discard(ticker)
 
+        sl_id = self._sl_orders.pop(ticker, None)
         tp_id = self._tp_orders.pop(ticker, None)
-        if tp_id:
-            if self.cancel_order(tp_id, ticker):
-                print(f"  [BINANCE] Cancelled TP order for {ticker} [id={tp_id}]")
+
+        if sl_id and self.cancel_order(sl_id, ticker):
+            print(f"  [BINANCE] Cancelled SL order for {ticker} [id={sl_id}]")
+            if is_oco:
+                # Cancelling one leg of an OCO cancels the entire order list
+                return
+
+        if tp_id and self.cancel_order(tp_id, ticker):
+            print(f"  [BINANCE] Cancelled TP order for {ticker} [id={tp_id}]")
 
     def _place_sl_tp_orders(self, ticker: str, quantity: float, entry_price: float) -> None:
-        """Place both stop-loss and take-profit orders after a BUY fill."""
+        """Protect a position with broker-level SL/TP after a BUY fill.
+
+        Prefers a single OCO order — the exchange cancels the surviving leg
+        automatically. Falls back to separate SL + TP orders if OCO fails
+        (the TP leg may then fail because the SL locks the quantity).
+        """
         sl_price = entry_price * (1.0 - self.config.stop_loss_pct)
         tp_price = entry_price * (1.0 + self.config.take_profit_pct)
 
+        oco = self.submit_oco_sell(ticker, quantity, sl_price, tp_price)
+        if oco and (oco["sl_id"] or oco["tp_id"]):
+            if oco["sl_id"]:
+                self._sl_orders[ticker] = oco["sl_id"]
+            if oco["tp_id"]:
+                self._tp_orders[ticker] = oco["tp_id"]
+            self._oco_symbols.add(ticker)
+            return
+
+        print(f"  [BINANCE] Falling back to separate SL/TP orders for {ticker}")
         sl_order = self.submit_stop_loss(ticker, quantity, sl_price)
         if sl_order:
             self._sl_orders[ticker] = sl_order["id"]
@@ -498,6 +584,104 @@ class BinanceLiveTrader:
             self._tp_orders[ticker] = tp_order["id"]
         else:
             print(f"  [BINANCE] WARNING: Failed to place TP for {ticker} — relying on polling-based monitoring")
+
+    # Order statuses that mean the order is no longer working at the broker
+    _DEAD_ORDER_STATUSES = frozenset(
+        {"CANCELED", "REJECTED", "EXPIRED", "EXPIRED_IN_MATCH", "PENDING_CANCEL"}
+    )
+
+    def reconcile_sl_tp(self, portfolio: Portfolio, tickers: list[str]) -> None:
+        """Reconcile broker-level SL/TP orders with the current portfolio.
+
+        Runs once per cycle, right after sync_portfolio():
+
+        1. Dangling sibling cleanup — if the broker filled the SL (or TP)
+           between cycles, cancel the surviving sibling (OCO legs cancel
+           themselves) and drop the position locally.
+        2. Restart protection — if an open position has no tracked SL/TP
+           (e.g. the bot was restarted), adopt matching open SELL orders
+           from the broker, or place a fresh OCO around the current price.
+        """
+        # ── 1. Detect executed / dead tracked orders ───────────────
+        for ticker in sorted(set(self._sl_orders) | set(self._tp_orders)):
+            sl_id = self._sl_orders.get(ticker)
+            tp_id = self._tp_orders.get(ticker)
+            sl_status = self.get_order_status(ticker, sl_id) if sl_id else ""
+            tp_status = self.get_order_status(ticker, tp_id) if tp_id else ""
+
+            if sl_status == "FILLED":
+                print(f"  [BINANCE] Broker executed STOP-LOSS for {ticker} [id={sl_id}] — clearing sibling TP")
+                was_oco = ticker in self._oco_symbols
+                self._oco_symbols.discard(ticker)
+                self._sl_orders.pop(ticker, None)
+                self._tp_orders.pop(ticker, None)
+                if tp_id and not was_oco and tp_status != "FILLED" and tp_status not in self._DEAD_ORDER_STATUSES:
+                    self.cancel_order(tp_id, ticker)
+                portfolio.positions.pop(ticker, None)
+            elif tp_status == "FILLED":
+                print(f"  [BINANCE] Broker executed TAKE-PROFIT for {ticker} [id={tp_id}] — clearing sibling SL")
+                was_oco = ticker in self._oco_symbols
+                self._oco_symbols.discard(ticker)
+                self._sl_orders.pop(ticker, None)
+                self._tp_orders.pop(ticker, None)
+                if sl_id and not was_oco and sl_status not in self._DEAD_ORDER_STATUSES:
+                    self.cancel_order(sl_id, ticker)
+                portfolio.positions.pop(ticker, None)
+            else:
+                # Drop tracking for orders that died on their own
+                if sl_id and sl_status in self._DEAD_ORDER_STATUSES:
+                    self._sl_orders.pop(ticker, None)
+                if tp_id and tp_status in self._DEAD_ORDER_STATUSES:
+                    self._tp_orders.pop(ticker, None)
+                if ticker not in self._sl_orders and ticker not in self._tp_orders:
+                    self._oco_symbols.discard(ticker)
+                # Position vanished without either order filling — closed
+                # outside the bot. Cancel whatever is still working.
+                if ticker not in portfolio.positions and (ticker in self._sl_orders or ticker in self._tp_orders):
+                    print(f"  [BINANCE] Position {ticker} closed outside the bot — cancelling leftover SL/TP")
+                    self.cancel_sl_tp_orders(ticker)
+
+        # ── 2. Ensure every open position is protected ─────────────
+        for ticker in tickers:
+            pos = portfolio.positions.get(ticker)
+            if pos is None or pos.quantity <= 0:
+                continue
+            if ticker in self._sl_orders or ticker in self._tp_orders:
+                continue
+            # Skip dust below Binance's default min notional ($10)
+            if pos.quantity * pos.avg_entry_price < 10.0:
+                continue
+
+            # Adopt open SELL orders already at the broker (e.g. placed
+            # before a restart) instead of duplicating them.
+            try:
+                open_orders = self._client.get_open_orders(symbol=ticker)
+            except Exception as e:
+                print(f"  [BINANCE] Could not fetch open orders for {ticker}: {e}")
+                open_orders = []
+
+            oco_adopted = False
+            for o in open_orders:
+                if str(o.get("side", "")).upper() != "SELL":
+                    continue
+                otype = str(o.get("type", "")).upper()
+                oid = str(o.get("orderId", ""))
+                in_oco = int(o.get("orderListId", -1)) != -1
+                if otype == "STOP_LOSS_LIMIT" and ticker not in self._sl_orders:
+                    self._sl_orders[ticker] = oid
+                    oco_adopted = oco_adopted or in_oco
+                    print(f"  [BINANCE] Adopted existing SL order for {ticker} [id={oid}]")
+                elif otype in ("LIMIT", "LIMIT_MAKER") and ticker not in self._tp_orders:
+                    self._tp_orders[ticker] = oid
+                    oco_adopted = oco_adopted or in_oco
+                    print(f"  [BINANCE] Adopted existing TP order for {ticker} [id={oid}]")
+            if oco_adopted:
+                self._oco_symbols.add(ticker)
+            if ticker in self._sl_orders or ticker in self._tp_orders:
+                continue
+
+            print(f"  [BINANCE] Position {ticker} has no SL/TP protection — placing orders")
+            self._place_sl_tp_orders(ticker, pos.quantity, pos.avg_entry_price)
 
     # ------------------------------------------------------------------
     # Strategy Execution
@@ -518,6 +702,11 @@ class BinanceLiveTrader:
         data = self.get_historical_klines(tickers, days=120, interval=self.config.interval)
         portfolio = self.sync_portfolio()
         self.risk_manager.set_daily_start(portfolio.total_value)
+
+        # Reconcile broker SL/TP orders: cancel dangling siblings after a
+        # broker-side SL/TP fill, and protect positions that have no orders
+        # (e.g. after a bot restart).
+        self.reconcile_sl_tp(portfolio, tickers)
 
         signals: dict[str, str] = {}
 

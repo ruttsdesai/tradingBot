@@ -848,6 +848,24 @@ class DhanLiveTrader:
             print(f"  [DHAN] Failed to cancel order {order_id}: {e}")
             return False
 
+    def get_order_status(self, order_id: str) -> str:
+        """Fetch the current status of an order (e.g. TRADED, PENDING, CANCELLED).
+
+        Returns "" if the order cannot be looked up.
+        """
+        if not order_id:
+            return ""
+        dhan = self._init_client()
+        try:
+            data = self._unwrap(dhan.get_order_by_id(order_id))
+            if isinstance(data, list):
+                data = data[0] if data else {}
+            if isinstance(data, dict):
+                return str(data.get("orderStatus", data.get("order_status", ""))).upper()
+        except Exception as e:
+            print(f"  [DHAN] Could not fetch status of order {order_id}: {e}")
+        return ""
+
     def cancel_sl_tp_orders(self, ticker: str) -> None:
         """Cancel both stop-loss and take-profit orders for a ticker."""
         base = strip_ns(ticker)
@@ -886,6 +904,114 @@ class DhanLiveTrader:
         else:
             print(f"  [DHAN] WARNING: Failed to place TP for {ticker} — relying on polling-based monitoring")
 
+    # Order statuses that mean the order is no longer working at the broker
+    _DEAD_ORDER_STATUSES = frozenset({"CANCELLED", "CANCELED", "REJECTED", "EXPIRED"})
+    _PENDING_ORDER_STATUSES = frozenset({"TRANSIT", "PENDING", "TRIGGER_PENDING", "PART_TRADED"})
+
+    def reconcile_sl_tp(self, portfolio: Portfolio, tickers: list[str]) -> None:
+        """Reconcile broker-level SL/TP orders with the current portfolio.
+
+        Runs once per cycle, right after sync_portfolio():
+
+        1. Dangling sibling cleanup — if the broker executed the SL (or TP)
+           between cycles, cancel the surviving sibling order and drop the
+           position locally so strategies don't act on a closed position.
+        2. Restart protection — if an open position has no tracked SL/TP
+           (e.g. the bot was restarted), adopt matching pending SELL orders
+           from the broker, or place fresh SL/TP orders around the average
+           entry price.
+        """
+        # ── 1. Detect executed / dead tracked orders ───────────────
+        for base in sorted(set(self._sl_orders) | set(self._tp_orders)):
+            sl_id = self._sl_orders.get(base)
+            tp_id = self._tp_orders.get(base)
+            sl_status = self.get_order_status(sl_id) if sl_id else ""
+            tp_status = self.get_order_status(tp_id) if tp_id else ""
+
+            if sl_status == "TRADED":
+                print(f"  [DHAN] Broker executed STOP-LOSS for {base} [id={sl_id}] — cancelling sibling TP")
+                self._sl_orders.pop(base, None)
+                self._tp_orders.pop(base, None)
+                if tp_id and tp_status != "TRADED" and tp_status not in self._DEAD_ORDER_STATUSES:
+                    self.cancel_order(tp_id)
+                portfolio.positions.pop(base, None)
+                self._notify(format_sl_msg(base, f"Broker SL order executed [id={sl_id}]", "broker"))
+            elif tp_status == "TRADED":
+                print(f"  [DHAN] Broker executed TAKE-PROFIT for {base} [id={tp_id}] — cancelling sibling SL")
+                self._sl_orders.pop(base, None)
+                self._tp_orders.pop(base, None)
+                if sl_id and sl_status not in self._DEAD_ORDER_STATUSES:
+                    self.cancel_order(sl_id)
+                portfolio.positions.pop(base, None)
+                self._notify(format_tp_msg(base, f"Broker TP order executed [id={tp_id}]", "broker"))
+            else:
+                # Drop tracking for orders that died on their own
+                # (DAY orders expire at market close, manual cancels, rejects)
+                if sl_id and sl_status in self._DEAD_ORDER_STATUSES:
+                    self._sl_orders.pop(base, None)
+                if tp_id and tp_status in self._DEAD_ORDER_STATUSES:
+                    self._tp_orders.pop(base, None)
+                # Position vanished without either order trading — closed
+                # outside the bot. Cancel whatever is still working.
+                if base not in portfolio.positions and (base in self._sl_orders or base in self._tp_orders):
+                    print(f"  [DHAN] Position {base} closed outside the bot — cancelling leftover SL/TP")
+                    self.cancel_sl_tp_orders(base)
+
+        # ── 2. Ensure every open position is protected ─────────────
+        unprotected: list[tuple[str, str, Position]] = []
+        for ticker in tickers:
+            base = strip_ns(ticker)
+            pos = portfolio.positions.get(base)
+            if pos is None or pos.quantity <= 0:
+                continue
+            if base in self._sl_orders or base in self._tp_orders:
+                continue
+            unprotected.append((ticker, base, pos))
+
+        if not unprotected:
+            return
+
+        # Fetch the broker's order book once so we can adopt pending SELL
+        # orders that were placed before a restart instead of duplicating them.
+        pending_by_sid: dict[str, list[tuple[str, str]]] = {}
+        dhan = self._init_client()
+        try:
+            orders = self._unwrap(dhan.get_order_list())
+            if isinstance(orders, list):
+                for o in orders:
+                    if not isinstance(o, dict):
+                        continue
+                    status = str(o.get("orderStatus", o.get("order_status", ""))).upper()
+                    txn = str(o.get("transactionType", o.get("transaction_type", ""))).upper()
+                    if txn != "SELL" or status not in self._PENDING_ORDER_STATUSES:
+                        continue
+                    sid = str(o.get("securityId", o.get("security_id", "")))
+                    otype = str(o.get("orderType", o.get("order_type", ""))).upper()
+                    oid = str(o.get("orderId", o.get("order_id", "")))
+                    if sid and oid:
+                        pending_by_sid.setdefault(sid, []).append((otype, oid))
+        except Exception as e:
+            print(f"  [DHAN] Could not fetch order list for SL/TP adoption: {e}")
+
+        for ticker, base, pos in unprotected:
+            try:
+                sid = self._lookup_security_id(ticker)
+            except ValueError:
+                sid = ""
+            for otype, oid in pending_by_sid.get(sid, []):
+                if "STOP_LOSS" in otype or otype in ("SLM", "SL"):
+                    if base not in self._sl_orders:
+                        self._sl_orders[base] = oid
+                        print(f"  [DHAN] Adopted existing SL order for {base} [id={oid}]")
+                elif otype == "LIMIT" and base not in self._tp_orders:
+                    self._tp_orders[base] = oid
+                    print(f"  [DHAN] Adopted existing TP order for {base} [id={oid}]")
+            if base in self._sl_orders or base in self._tp_orders:
+                continue
+
+            print(f"  [DHAN] Position {base} has no SL/TP protection — placing orders")
+            self._place_sl_tp_orders(ticker, base, int(pos.quantity), pos.avg_entry_price)
+
     # ------------------------------------------------------------------
     # Strategy Execution
     # ------------------------------------------------------------------
@@ -907,6 +1033,11 @@ class DhanLiveTrader:
         # Sync portfolio from broker
         portfolio = self.sync_portfolio()
         self.risk_manager.set_daily_start(portfolio.total_value)
+
+        # Reconcile broker SL/TP orders: cancel dangling siblings after a
+        # broker-side SL/TP fill, and protect positions that have no orders
+        # (e.g. after a bot restart).
+        self.reconcile_sl_tp(portfolio, tickers)
 
         # ── Intraday auto-square-off gate ──────────────────────────
         # At 3:10 PM IST, force-close ALL open positions (20 min before

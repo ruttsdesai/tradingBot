@@ -233,7 +233,7 @@ strategies:
 scheduler:
   run_time: "09:15"             # Run daily at 9:15 AM IST (NSE market open)
   timezone: "Asia/Kolkata"      # Indian Standard Time (NSE market hours: 9:15 AM - 3:30 PM)
-  mode: "dhan"                  # paper | live | crypto | dhan
+  mode: "dhan"                  # paper | live | crypto | dhan | both (crypto 24/7 + dhan daily)
 
 # Crypto Live Trading (Binance)
 crypto_live_trading:

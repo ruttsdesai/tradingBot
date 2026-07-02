@@ -8,11 +8,13 @@ Modes (set in config.yaml -> scheduler -> mode):
   - "live"   : Runs AlpacaLiveTrader with real/paper brokerage orders
   - "crypto" : Runs BinanceLiveTrader with real/testnet Binance orders
   - "dhan"   : Runs DhanLiveTrader for India NSE (uses config.yaml dhan_live_trading section)
+  - "both"   : Runs crypto 24/7 in a background thread AND Dhan daily at run_time
 """
 
 import datetime
 import json
 import os
+import threading
 import time
 
 import schedule
@@ -343,7 +345,15 @@ def run_crypto_live_trader(config: dict) -> None:
     trader.run(tickers, once=False)  # Continuous loop — 24/7 crypto
 
 
-# Map mode name -> handler function
+def _run_crypto_thread(config: dict) -> None:
+    """Wrapper for running the crypto trader in a background thread."""
+    try:
+        run_crypto_live_trader(config)
+    except Exception as e:
+        print(f"\n[SCHEDULER] Crypto trader thread crashed: {e}")
+
+
+# Map mode name -> handler function ("both" is handled in start_scheduler)
 _SCHEDULER_MODES = {
     "paper": run_paper_trader,
     "live": run_live_trader,
@@ -357,11 +367,22 @@ def start_scheduler(config: dict) -> None:
     run_time = config["scheduler"]["run_time"]
     mode = config["scheduler"].get("mode", "paper")
 
-    handler = _SCHEDULER_MODES.get(mode)
-    if handler is None:
-        print(f"Unknown scheduler mode: '{mode}'. Valid: {list(_SCHEDULER_MODES.keys())}")
-        print(f"Falling back to 'paper' mode.")
-        handler = run_paper_trader
+    if mode == "both":
+        # Dual mode: crypto trades 24/7, so launch it immediately in a
+        # background thread; Dhan launches daily at run_time (NSE open)
+        # and gates itself on market hours.
+        print("Dual mode: starting crypto live trader now (24/7, background thread)...")
+        threading.Thread(
+            target=_run_crypto_thread, args=(config,),
+            name="crypto-live-trader", daemon=True,
+        ).start()
+        handler = run_dhan_trader
+    else:
+        handler = _SCHEDULER_MODES.get(mode)
+        if handler is None:
+            print(f"Unknown scheduler mode: '{mode}'. Valid: {list(_SCHEDULER_MODES.keys()) + ['both']}")
+            print(f"Falling back to 'paper' mode.")
+            handler = run_paper_trader
 
     schedule.every().day.at(run_time).do(handler, config=config)
 

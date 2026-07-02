@@ -1,7 +1,7 @@
 # Chat Memory — tradingBot
 
-> Updated: 2026-06-01
-> Sessions: Dhan SL/TP, crypto multi-strategy, scheduler continuous, security IDs, live trading
+> Updated: 2026-07-02
+> Sessions: Dhan SL/TP, crypto multi-strategy, scheduler continuous, security IDs, live trading, SL/TP reconcile + OCO + dual scheduler
 
 ---
 
@@ -112,6 +112,41 @@ TITAN:3506  M&M:2031  HCLTECH:7229
 
 ---
 
+## 🆕 Changes Made This Session (2026-07-02)
+
+### 1. SL/TP Reconcile Loop (`engine/dhan_live_trader.py`, `engine/crypto_live_trader.py`)
+New `reconcile_sl_tp(portfolio, tickers)` runs every cycle right after `sync_portfolio()`:
+- **Dangling sibling fix**: if the broker executed the SL (or TP) between cycles,
+  the surviving sibling order is cancelled, tracking is cleared, and the position
+  is dropped locally (Dhan sends a Telegram notification too)
+- **Restart protection**: positions with no tracked SL/TP first *adopt* matching
+  pending SELL orders from the broker (`get_order_list()` / `get_open_orders()`),
+  otherwise fresh SL/TP orders are placed around the average entry price
+- Dead orders (CANCELLED / REJECTED / EXPIRED) are dropped from tracking; expired
+  DAY orders on Dhan get re-placed the next cycle automatically
+- Positions closed outside the bot (manual close) get leftover SL/TP cancelled
+
+### 2. Binance OCO Orders (`engine/crypto_live_trader.py`)
+- `_place_sl_tp_orders()` now prefers a single **OCO order** (`create_oco_order`):
+  TP leg = LIMIT_MAKER, SL leg = STOP_LOSS_LIMIT
+- Why: Binance spot **locks the quantity** for the first sell order, so the old
+  separate SL-then-TP pattern made the TP fail with insufficient balance; OCO also
+  makes the exchange auto-cancel the surviving leg (no dangling sibling)
+- Falls back to separate SL + TP orders if OCO fails
+- `cancel_sl_tp_orders()` cancels only one OCO leg (cancelling a leg cancels the list)
+
+### 3. Bug Fix: Binance Portfolio Keying (`engine/crypto_live_trader.py`)
+`sync_portfolio()` keyed positions by asset (`BTC`) while `run_once()` looked them
+up by pair (`BTCUSDT`) — after a restart the bot never saw its own positions
+(duplicate buys, SELL signals ignored). Now keyed by pair everywhere.
+
+### 4. Scheduler Dual Mode (`scheduler.py`, `config.yaml`)
+- `scheduler.mode: "both"` — crypto trader starts immediately in a background
+  daemon thread (24/7); Dhan trader is scheduled daily at `run_time`
+- Crypto thread crash is caught and logged, doesn't kill the scheduler
+
+---
+
 ## 🏗️ Architecture
 
 ### Data Flow
@@ -133,6 +168,7 @@ while True:
     if market closed: sleep(60), continue
     run_once():
         sync_portfolio()          # fetch positions from broker
+        reconcile_sl_tp()         # cancel dangling siblings + re-protect after restart
         for ticker in tickers:
             for strat in strategies:
                 if BUY signal:
@@ -181,11 +217,11 @@ python cli.py backtest
 1. **Dhan sandbox requires static IP** → production + paper engine for testing
 2. **Dhan Data API is paid** → using yfinance for historical data
 3. **Tokens expire every 24hrs** → must regenerate from developer portal
-4. **No SL/TP on bot restart** — existing positions synced from broker won't get new SL/TP orders (software monitoring works as fallback)
-5. **Scheduler: single mode only** — runs either Dhan OR crypto, not both simultaneously
-6. **Dangling SL/TP on broker hit** — if broker executes SL between cycles, TP order lingers until expiry
-7. **NSE equity only** — no F&O, no crypto via Dhan
-8. **Integer share quantities only** — fractional qty truncated
+4. **NSE equity only** — no F&O, no crypto via Dhan
+5. **Integer share quantities only** — fractional qty truncated
+6. **Binance avg entry price unknown** — restart SL/TP protection for crypto uses the *current* price as reference (Binance doesn't expose avg entry via the account endpoint)
+
+> Fixed in 2026-07-02 session: ~~No SL/TP on bot restart~~, ~~dangling SL/TP on broker hit~~, ~~scheduler single mode only~~ — see reconcile loop + OCO + dual mode above.
 
 ---
 

@@ -250,7 +250,10 @@ The scheduler runs daily at **09:15 IST** (NSE market open). It:
 python cli.py schedule
 ```
 
-Set `scheduler.mode` in config.yaml: `paper` | `live` | `crypto` | `dhan`.
+Set `scheduler.mode` in config.yaml: `paper` | `live` | `crypto` | `dhan` | `both`.
+
+`both` runs the crypto trader 24/7 in a background thread and launches the Dhan
+trader daily at `run_time` (it gates itself on NSE market hours).
 
 ---
 
