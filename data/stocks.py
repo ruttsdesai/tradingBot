@@ -61,6 +61,61 @@ def fetch_stock_data(
     return df
 
 
+# Yahoo Finance caps how far back each intraday interval goes
+INTRADAY_MAX_DAYS = {"1m": 7, "2m": 60, "5m": 60, "15m": 60, "30m": 60, "1h": 730}
+
+
+def fetch_intraday_data(
+    ticker: str,
+    interval: str = "5m",
+    days: int | None = None,
+    max_retries: int = 3,
+) -> pd.DataFrame:
+    """
+    Fetch intraday OHLCV bars from Yahoo Finance for day trading.
+
+    Args:
+        ticker: Stock symbol (e.g., 'AAPL', 'RELIANCE.NS')
+        interval: Candle interval -- '1m', '2m', '5m', '15m', '30m', '1h'
+        days: Days of history (default/cap: Yahoo's max for the interval,
+              e.g. 60 for 5m, 7 for 1m)
+
+    Returns:
+        DataFrame with columns: open, high, low, close, volume
+        Index: DatetimeIndex in the exchange's local time (tz-naive), so
+        grouping by calendar date yields trading sessions.
+    """
+    if interval not in INTRADAY_MAX_DAYS:
+        raise ValueError(f"Unsupported intraday interval: {interval}. "
+                         f"Choose from {list(INTRADAY_MAX_DAYS)}")
+
+    cap = INTRADAY_MAX_DAYS[interval]
+    if days is None:
+        days = cap
+    elif days > cap:
+        print(f"  Note: Yahoo caps {interval} data at {cap} days; using {cap}.")
+        days = cap
+
+    stock = yf.Ticker(ticker)
+    df = pd.DataFrame()
+    for attempt in range(max_retries):
+        df = stock.history(period=f"{days}d", interval=interval)
+        if not df.empty:
+            break
+
+    if df.empty:
+        raise ValueError(
+            f"Failed to fetch {interval} data for {ticker} after {max_retries} retries."
+        )
+
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+    df.columns = [c.lower() for c in df.columns]
+    df = df[["open", "high", "low", "close", "volume"]]
+    df.index = pd.to_datetime(df.index).tz_localize(None)
+    return df
+
+
 def fetch_multiple_stocks(
     tickers: list[str],
     years: int = 10,

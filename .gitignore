@@ -43,3 +43,6 @@ state/portfolio_state.json
 dist/
 build/
 *.egg-info/
+
+# Synthetic validation data (regenerate: python scripts/validate_day_trade.py --save-csv)
+data/synthetic/
