@@ -155,6 +155,19 @@ up by pair (`BTCUSDT`) — after a restart the bot never saw its own positions
   backtests are a short-window reality check only
 - Also extracted `_build_strategy_list()` helper in cli.py (was duplicated 2x)
 
+### 7. Real-Data Findings (57 trading days of 5m NSE data, Apr–Jul 2026)
+- Per-strategy day trading: 62/105 combos profitable but avg only ~+1%/quarter.
+  Winners = mean-reversion on high-beta non-IT names (AXISBANK+RSI +10.0%,
+  ASIANPAINT+BB +11.4%, BAJFINANCE+BB +12.1%). **IT sector loses under every
+  strategy intraday** (TCS avg −7.4%). MACD (daily-bar champion) is the worst
+  strategy on 5m bars — rankings nearly invert between daily and intraday
+- **Parallel day-trade engine (5-vote consensus) is defensive, not profitable,
+  on real data**: contains losses (TCS −4% vs −19% standalone worst) but votes
+  away the mean-reversion winners (AXISBANK −0.2% vs +10% standalone). An
+  8-config sweep (entry_threshold 0.1–0.3 × trend filter on/off) found no
+  meaningfully profitable setting (best avg +0.52%/57d) — don't tune-chase it;
+  prefer standalone RSI/Bollinger on the winner tickers for intraday
+
 ---
 
 ## 🏗️ Architecture
