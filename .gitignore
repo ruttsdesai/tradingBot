@@ -46,3 +46,6 @@ build/
 
 # Synthetic validation data (regenerate: python scripts/validate_day_trade.py --save-csv)
 data/synthetic/
+
+# Cached real intraday data (fetched ad-hoc, regeneratable)
+data/real5m/
