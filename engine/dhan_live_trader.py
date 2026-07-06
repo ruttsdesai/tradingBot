@@ -189,6 +189,7 @@ class DhanLiveTrader:
         self._notifier = None
         self._sl_orders: dict[str, str] = {}   # ticker (base) -> stop-loss order_id
         self._tp_orders: dict[str, str] = {}   # ticker (base) -> take-profit order_id
+        self._cnc_holdings: set[str] = set()   # symbols held as CNC delivery (sell as CNC, not MIS)
         self._init_notifier()
 
     # ------------------------------------------------------------------
@@ -238,6 +239,15 @@ class DhanLiveTrader:
     # ------------------------------------------------------------------
     # API response helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _field(d: dict, *keys, default=None):
+        """Read the first present key from a dict — Dhan responses mix
+        camelCase (v2 API) and snake_case (older SDK versions)."""
+        for k in keys:
+            if k in d and d[k] is not None:
+                return d[k]
+        return default
 
     @staticmethod
     def _unwrap(response):
@@ -408,12 +418,12 @@ class DhanLiveTrader:
             if isinstance(data, list):
                 for p in data:
                     positions.append({
-                        "symbol": p.get("trading_symbol", ""),
-                        "security_id": str(p.get("security_id", "")),
-                        "qty": int(p.get("net_qty", 0)),
-                        "avg_entry_price": float(p.get("average_price", 0.0)),
-                        "ltp": float(p.get("last_price", 0.0)),
-                        "unrealized_pl": float(p.get("unrealized_profit", 0.0)),
+                        "symbol": self._field(p, "tradingSymbol", "trading_symbol", default=""),
+                        "security_id": str(self._field(p, "securityId", "security_id", default="")),
+                        "qty": int(self._field(p, "netQty", "net_qty", default=0)),
+                        "avg_entry_price": float(self._field(p, "costPrice", "buyAvg", "average_price", default=0.0)),
+                        "ltp": float(self._field(p, "lastTradedPrice", "last_price", default=0.0)),
+                        "unrealized_pl": float(self._field(p, "unrealizedProfit", "unrealized_profit", default=0.0)),
                     })
         except Exception as e:
             print(f"  [DHAN] Error fetching positions: {e}")
@@ -431,11 +441,11 @@ class DhanLiveTrader:
             if isinstance(data, list):
                 for h in data:
                     holdings.append({
-                        "symbol": h.get("trading_symbol", ""),
-                        "security_id": str(h.get("security_id", "")),
-                        "qty": int(h.get("total_qty", 0)),
-                        "avg_entry_price": float(h.get("average_price", 0.0)),
-                        "ltp": float(h.get("last_price", 0.0)),
+                        "symbol": self._field(h, "tradingSymbol", "trading_symbol", default=""),
+                        "security_id": str(self._field(h, "securityId", "security_id", default="")),
+                        "qty": int(self._field(h, "totalQty", "total_qty", default=0)),
+                        "avg_entry_price": float(self._field(h, "avgCostPrice", "average_price", default=0.0)),
+                        "ltp": float(self._field(h, "lastTradedPrice", "last_price", default=0.0)),
                     })
         except Exception as e:
             print(f"  [DHAN] Error fetching holdings: {e}")
@@ -464,19 +474,20 @@ class DhanLiveTrader:
 
         # Combine positions + holdings
         all_positions: dict[str, dict] = {}
+        self._cnc_holdings.clear()
 
         try:
             for p in self._unwrap(dhan.get_positions()) or []:
                 if not isinstance(p, dict):
                     continue
-                sym = p.get("trading_symbol", "")
-                qty = int(p.get("net_qty", 0))
+                sym = self._field(p, "tradingSymbol", "trading_symbol", default="")
+                qty = int(self._field(p, "netQty", "net_qty", default=0))
                 if qty <= 0:
                     continue
                 all_positions[sym] = {
                     "symbol": sym,
                     "qty": qty,
-                    "avg_entry_price": float(p.get("average_price", 0.0)),
+                    "avg_entry_price": float(self._field(p, "costPrice", "buyAvg", "average_price", default=0.0)),
                 }
         except Exception:
             pass
@@ -485,10 +496,12 @@ class DhanLiveTrader:
             for h in self._unwrap(dhan.get_holdings()) or []:
                 if not isinstance(h, dict):
                     continue
-                sym = h.get("trading_symbol", "")
-                qty = int(h.get("total_qty", 0))
+                sym = self._field(h, "tradingSymbol", "trading_symbol", default="")
+                qty = int(self._field(h, "totalQty", "total_qty", default=0))
                 if qty <= 0:
                     continue
+                # Delivery holdings must be sold as CNC, never as intraday MIS
+                self._cnc_holdings.add(sym)
                 if sym in all_positions:
                     # Merge: add holdings qty to positions qty
                     all_positions[sym]["qty"] += qty
@@ -496,7 +509,7 @@ class DhanLiveTrader:
                     all_positions[sym] = {
                         "symbol": sym,
                         "qty": qty,
-                        "avg_entry_price": float(h.get("average_price", 0.0)),
+                        "avg_entry_price": float(self._field(h, "avgCostPrice", "average_price", default=0.0)),
                     }
         except Exception:
             pass
@@ -615,6 +628,17 @@ class DhanLiveTrader:
     # Order Execution
     # ------------------------------------------------------------------
 
+    def _sell_product_type(self, ticker: str):
+        """Product type for SELL-side orders on a symbol.
+
+        Delivery (CNC) holdings must be sold as CNC — an INTRA sell against
+        a holding opens a fresh intraday short instead of selling the shares.
+        """
+        dhan = self._init_client()
+        if strip_ns(ticker) in self._cnc_holdings:
+            return dhan.CNC
+        return dhan.INTRA if self.config.intraday else dhan.CNC
+
     def submit_buy(self, ticker: str, quantity: float) -> dict | None:
         """Submit a MKT buy order via Dhan. Returns order dict or None."""
         dhan = self._init_client()
@@ -687,7 +711,7 @@ class DhanLiveTrader:
         try:
             sid = self._lookup_security_id(ticker)
 
-            product_type = dhan.INTRA if self.config.intraday else dhan.CNC
+            product_type = self._sell_product_type(ticker)
 
             response = dhan.place_order(
                 security_id=sid,
@@ -750,7 +774,7 @@ class DhanLiveTrader:
         trigger = round(trigger_price, 2)
         try:
             sid = self._lookup_security_id(ticker)
-            product_type = dhan.INTRA if self.config.intraday else dhan.CNC
+            product_type = self._sell_product_type(ticker)
 
             response = dhan.place_order(
                 security_id=sid,
@@ -800,7 +824,7 @@ class DhanLiveTrader:
         limit = round(limit_price, 2)
         try:
             sid = self._lookup_security_id(ticker)
-            product_type = dhan.INTRA if self.config.intraday else dhan.CNC
+            product_type = self._sell_product_type(ticker)
 
             response = dhan.place_order(
                 security_id=sid,
@@ -1049,6 +1073,8 @@ class DhanLiveTrader:
                 print(f"  [DHAN] AUTO-SQUARE-OFF ({now.strftime('%H:%M')} IST): Closing all positions...")
                 for ticker in list(tickers):
                     base = strip_ns(ticker)
+                    if base in self._cnc_holdings:
+                        continue  # delivery holdings are not MIS — no forced square-off
                     if base in portfolio.positions:
                         pos = portfolio.positions[base]
                         self.cancel_sl_tp_orders(ticker)
@@ -1247,7 +1273,7 @@ class DhanLiveTrader:
             # ── Time-based exit for stale intraday positions ─────────
             # If a position has been held too long with minimal profit,
             # exit to free up capital for better opportunities.
-            if self.config.intraday and base in portfolio.positions:
+            if self.config.intraday and base in portfolio.positions and base not in self._cnc_holdings:
                 pos = portfolio.positions[base]
                 hold_minutes = (datetime.now() - pos.entry_date).total_seconds() / 60.0
                 if hold_minutes >= self.config.max_hold_minutes:
