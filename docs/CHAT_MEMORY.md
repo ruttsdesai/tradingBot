@@ -155,7 +155,19 @@ up by pair (`BTCUSDT`) — after a restart the bot never saw its own positions
   backtests are a short-window reality check only
 - Also extracted `_build_strategy_list()` helper in cli.py (was duplicated 2x)
 
-### 7. Real-Data Findings (57 trading days of 5m NSE data, Apr–Jul 2026)
+### 7. Forward Paper Trading (`engine/dhan_paper_trader.py`, `dhan-live --paper`)
+- `DhanPaperTrader(DhanLiveTrader)`: same loop/strategies/risk/square-off but
+  simulated fills, zero broker calls, no credentials needed
+- Virtual portfolio persists to `state/dhan_paper_state.json` (restart-safe);
+  inspect with `python cli.py paper-status`; `--capital` sets virtual cash (default 10k)
+- Software SL/TP monitoring performs all exits (broker plumbing disabled)
+- Also fixed: run_once price keying (base symbol, was .NS — stale position marks),
+  and data/stocks.py now falls back to Yahoo's plain v8 chart API when yfinance's
+  curl_cffi TLS impersonation is blocked by a proxy
+- Account reality check (Jul 6): Rs 0 cash; holdings 8x ITC @278.40 + 1x HINDUNILVR
+  @2086.50 (both in profit). Zero-cost paper testing chosen before adding funds
+
+### 8. Real-Data Findings (57 trading days of 5m NSE data, Apr–Jul 2026)
 - Per-strategy day trading: 62/105 combos profitable but avg only ~+1%/quarter.
   Winners = mean-reversion on high-beta non-IT names (AXISBANK+RSI +10.0%,
   ASIANPAINT+BB +11.4%, BAJFINANCE+BB +12.1%). **IT sector loses under every

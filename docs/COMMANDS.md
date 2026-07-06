@@ -120,6 +120,30 @@ the `day_trading:` section of `config.yaml`.
 
 ---
 
+## 🧪 Forward Paper Trading — India NSE (zero cost, no credentials)
+
+Same loop as dhan-live (live prices, same strategies/risk/square-off rules)
+but fills are simulated and the virtual portfolio persists to
+`state/dhan_paper_state.json` across restarts.
+
+```bash
+# Continuous paper trading on the evidence-backed winner set (run during market hours)
+python cli.py dhan-live --paper -t AXISBANK.NS -t ASIANPAINT.NS -t BAJFINANCE.NS \
+    -t M&M.NS -t SUNPHARMA.NS -t KOTAKBANK.NS \
+    -s rsi_mean_revert -s bollinger_bands -s ma_crossover
+
+# One evaluation cycle, all 5 strategies, default tickers
+python cli.py dhan-live --paper --all --once
+
+# Custom virtual capital (default Rs 10,000)
+python cli.py dhan-live --paper --all --capital 50000
+
+# Inspect the virtual portfolio, realized P&L, and trade log
+python cli.py paper-status
+```
+
+---
+
 ## 🔴 Live Trading — India NSE (Dhan)
 
 ```bash

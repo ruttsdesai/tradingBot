@@ -1108,7 +1108,10 @@ class DhanLiveTrader:
             # Evaluate ALL strategies for this ticker
             idx = len(df) - 1
             price = df["close"].iloc[idx]
-            portfolio.update_price(ticker, price)
+            base = strip_ns(ticker)
+            # Key prices by base symbol — positions are keyed the same way,
+            # so total_value picks up live marks instead of stale entries
+            portfolio.update_price(base, price)
 
             # Pre-compute ATR (used for sizing AND intraday volatility filter)
             atr_val = None
@@ -1126,11 +1129,10 @@ class DhanLiveTrader:
                 vol_pct = atr_val / price
                 if vol_pct < self.config.min_volatility_pct:
                     low_vol = True
-                    print(f"  [DHAN] Low volatility for {ticker}: ATR/close={vol_pct:.3%} < {self.config.min_volatility_pct:.1%} — skipping BUYs")
+                    print(f"  [DHAN] Low volatility for {ticker}: ATR/close={vol_pct:.3%} < {self.config.min_volatility_pct:.2%} — skipping BUYs")
 
             # Track which strategies signaled this ticker
             per_strategy_signals: list[str] = []
-            base = strip_ns(ticker)
 
             for strat in self.strategies:
                 # Pre-compute indicators (each strategy has its own prepare)
@@ -1328,7 +1330,7 @@ class DhanLiveTrader:
                   If False, loop forever at poll_interval_seconds.
         """
         dhan = self._init_client()
-        mode = "SANDBOX" if self.config.sandbox else "LIVE"
+        mode = getattr(self, "_mode_label", "") or ("SANDBOX" if self.config.sandbox else "LIVE")
 
         # Print account summary
         try:

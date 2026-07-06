@@ -1556,11 +1556,15 @@ def ibkr_live(ticker, market, strategy, once, port):
 @click.option("--all", "all_strategies", is_flag=True, help="Run all 5 strategies (MACD, Bollinger, RSI, MA Crossover, Momentum Breakout)")
 @click.option("--once", is_flag=True, help="Run one cycle then exit (default: loop)")
 @click.option("--live", "live_mode", is_flag=True, help="Use Dhan LIVE (default: sandbox)")
+@click.option("--paper", "paper_mode", is_flag=True,
+              help="Forward paper trading: live prices, simulated fills, no orders, no credentials needed")
+@click.option("--capital", default=None, type=float,
+              help="Virtual starting capital for --paper (default: 10000)")
 @click.option("--intraday", is_flag=True, help="Use intraday bars (5m) instead of daily — catches breakouts during the day")
 @click.option("--intraday-interval", default=None,
               type=click.Choice(["1m", "5m", "15m", "30m", "1h"]),
               help="Intraday candle interval (default: 5m or config value)")
-def dhan_live(ticker, strategies, all_strategies, once, live_mode, intraday, intraday_interval):
+def dhan_live(ticker, strategies, all_strategies, once, live_mode, paper_mode, capital, intraday, intraday_interval):
     """Run live trading via Dhan (SANDBOX by default).
 
     Requires a Dhan account and API credentials in .env:
@@ -1571,6 +1575,7 @@ def dhan_live(ticker, strategies, all_strategies, once, live_mode, intraday, int
       python cli.py dhan-live --strategy macd --once
       python cli.py dhan-live --strategy bollinger_bands
       python cli.py dhan-live -t SBIN.NS -t ICICIBANK.NS -t BHARTIARTL.NS --once
+      python cli.py dhan-live --paper --all     # zero-cost forward paper test
       python cli.py dhan-live --live            # REAL money (use with caution!)
     """
     from strategies.ma_crossover import MACrossoverStrategy
@@ -1579,7 +1584,11 @@ def dhan_live(ticker, strategies, all_strategies, once, live_mode, intraday, int
     from strategies.bollinger_bands import BollingerBandsStrategy
     from strategies.momentum_breakout import MomentumBreakoutStrategy
     from engine.dhan_live_trader import DhanLiveTrader, DhanLiveTraderConfig
+    from engine.dhan_paper_trader import DhanPaperTrader
     from engine.risk_manager import RiskManager
+
+    if paper_mode and live_mode:
+        raise click.UsageError("--paper and --live are mutually exclusive")
 
     dhan_cfg = CONFIG.get("dhan_live_trading", {})
     api_cfg = CONFIG.get("api", {})
@@ -1600,8 +1609,8 @@ def dhan_live(ticker, strategies, all_strategies, once, live_mode, intraday, int
     tg_api_id = api_cfg.get("tg_api_id", 0)
     tg_api_hash = api_cfg.get("tg_api_hash", "")
 
-    # Validate credentials based on mode
-    if is_sandbox:
+    # Validate credentials based on mode (paper mode needs none)
+    if is_sandbox and not paper_mode:
         # Sandbox: use sandbox creds (preferred) or fall back to production creds
         if not sandbox_client_id and not sandbox_access_token:
             print("  [WARN] No DHAN_SANDBOX credentials set — falling back to production creds.")
@@ -1687,7 +1696,7 @@ def dhan_live(ticker, strategies, all_strategies, once, live_mode, intraday, int
         sandbox_client_id=sandbox_client_id,
         sandbox_access_token=sandbox_access_token,
         disable_ssl=dhan_cfg.get("disable_ssl", False),
-        initial_capital=dhan_cfg.get("initial_capital", 100_000),
+        initial_capital=(capital or 10_000.0) if paper_mode else dhan_cfg.get("initial_capital", 100_000),
         max_positions=dhan_cfg.get("max_positions", 5),
         max_allocation_pct=dhan_cfg.get("max_allocation_pct", 0.20),
         max_daily_loss_pct=risk_cfg["max_daily_loss_pct"],
@@ -1711,7 +1720,7 @@ def dhan_live(ticker, strategies, all_strategies, once, live_mode, intraday, int
         tg_api_hash=tg_api_hash,
     )
 
-    mode = "LIVE" if live_mode else "SANDBOX"
+    mode = "PAPER" if paper_mode else ("LIVE" if live_mode else "SANDBOX")
     effective_intraday = intraday or dhan_cfg.get("intraday", False)
     effective_interval = intraday_interval or dhan_cfg.get("intraday_interval", "5m")
     interval_tag = f" [{effective_interval} intraday]" if effective_intraday else ""
@@ -1722,12 +1731,60 @@ def dhan_live(ticker, strategies, all_strategies, once, live_mode, intraday, int
     click.echo()
 
     try:
-        trader = DhanLiveTrader(config, strategies=strat_list, risk_manager=risk)
+        trader_cls = DhanPaperTrader if paper_mode else DhanLiveTrader
+        trader = trader_cls(config, strategies=strat_list, risk_manager=risk)
         trader.run(tickers, once=once)
     except ImportError as e:
         click.echo(f"\nERROR: {e}")
     except Exception as e:
         click.echo(f"\nERROR: {e}")
+
+
+@cli.command("paper-status")
+def paper_status():
+    """Show the Dhan forward paper-trading portfolio (positions, P&L, trades)."""
+    import json
+    from tabulate import tabulate
+
+    state_file = os.path.join(os.path.dirname(__file__), "state", "dhan_paper_state.json")
+    if not os.path.exists(state_file):
+        click.echo("No paper state yet — run: python cli.py dhan-live --paper --all")
+        return
+    with open(state_file) as f:
+        d = json.load(f)
+
+    cash = d.get("cash", 0.0)
+    initial = d.get("initial_capital", 0.0)
+    positions = d.get("positions", {})
+    trades = d.get("trades", [])
+    realized = d.get("realized_pnl", 0.0)
+
+    click.echo(f"\n=== Dhan Paper Portfolio (as of {d.get('last_updated', '?')}) ===\n")
+    click.echo(f"  Initial capital: Rs {initial:,.2f}")
+    click.echo(f"  Cash:            Rs {cash:,.2f}")
+    click.echo(f"  Realized P&L:    Rs {realized:+,.2f}")
+
+    if positions:
+        rows = [[b, p["qty"], f"{p['avg']:,.2f}", p.get("entry", "?")]
+                for b, p in positions.items()]
+        click.echo("\n  Open positions:")
+        click.echo(tabulate(rows, headers=["Symbol", "Qty", "Avg Entry", "Entered"],
+                            tablefmt="rounded_outline"))
+    else:
+        click.echo("  Open positions:  none")
+
+    if trades:
+        sells = [t for t in trades if t["side"] == "SELL"]
+        wins = sum(1 for t in sells if t.get("pnl", 0) > 0)
+        click.echo(f"\n  Trades: {len(trades)} total, {len(sells)} closed"
+                   + (f", win rate {wins/len(sells):.0%}" if sells else ""))
+        rows = [[t["ts"], t["side"], t["symbol"], t["qty"], f"{t['price']:,.2f}",
+                 f"{t.get('pnl', 0):+,.2f}" if t["side"] == "SELL" else ""]
+                for t in trades[-15:]]
+        click.echo("\n  Last 15 trades:")
+        click.echo(tabulate(rows, headers=["Time", "Side", "Symbol", "Qty", "Price", "P&L"],
+                            tablefmt="rounded_outline"))
+    click.echo()
 
 
 @cli.command()

@@ -9,6 +9,42 @@ import pandas as pd
 import yfinance as yf
 
 
+_CHART_API_UA = {"User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36")}
+
+
+def _fetch_chart_api(ticker: str, interval: str, start: datetime, end: datetime) -> pd.DataFrame:
+    """Fallback fetch via Yahoo's public v8 chart API using plain requests.
+
+    yfinance's Chrome TLS impersonation (curl_cffi) is rejected by some
+    corporate/agent proxies; this plain endpoint works wherever the network
+    allows Yahoo at all. Returns the same shape as the yfinance path:
+    lowercase OHLCV columns, tz-naive exchange-local index.
+    """
+    import requests
+
+    url = (f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
+           f"?interval={interval}&period1={int(start.timestamp())}&period2={int(end.timestamp())}")
+    r = requests.get(url, headers=_CHART_API_UA, timeout=20)
+    r.raise_for_status()
+    result = r.json()["chart"]["result"][0]
+    ts = result.get("timestamp") or []
+    if not ts:
+        return pd.DataFrame()
+    quote = result["indicators"]["quote"][0]
+    tz = result["meta"].get("exchangeTimezoneName", "UTC")
+    idx = pd.to_datetime(ts, unit="s", utc=True).tz_convert(tz).tz_localize(None)
+    df = pd.DataFrame({
+        "open": quote["open"], "high": quote["high"], "low": quote["low"],
+        "close": quote["close"], "volume": quote["volume"],
+    }, index=idx)
+    df = df.dropna(subset=["close"])
+    for col in ("open", "high", "low"):
+        df[col] = df[col].fillna(df["close"])
+    df["volume"] = df["volume"].fillna(0)
+    return df[["open", "high", "low", "close", "volume"]]
+
+
 def fetch_stock_data(
     ticker: str,
     years: int = 10,
@@ -33,16 +69,28 @@ def fetch_stock_data(
 
     stock = yf.Ticker(ticker)
 
-    # Fetch with retries on empty results
+    # Fetch with retries on empty results (transport errors fall through
+    # to the plain chart-API fallback below)
     df = pd.DataFrame()
     for attempt in range(max_retries):
-        df = stock.history(
-            start=start.strftime("%Y-%m-%d"),
-            end=end.strftime("%Y-%m-%d"),
-            interval=interval,
-        )
+        try:
+            df = stock.history(
+                start=start.strftime("%Y-%m-%d"),
+                end=end.strftime("%Y-%m-%d"),
+                interval=interval,
+            )
+        except Exception:
+            break
         if not df.empty:
             break
+
+    if df.empty:
+        try:
+            df = _fetch_chart_api(ticker, interval, start, end)
+        except Exception:
+            df = pd.DataFrame()
+        if not df.empty:
+            return df
 
     if df.empty:
         raise ValueError(
@@ -99,9 +147,21 @@ def fetch_intraday_data(
     stock = yf.Ticker(ticker)
     df = pd.DataFrame()
     for attempt in range(max_retries):
-        df = stock.history(period=f"{days}d", interval=interval)
+        try:
+            df = stock.history(period=f"{days}d", interval=interval)
+        except Exception:
+            break
         if not df.empty:
             break
+
+    if df.empty:
+        end = datetime.now()
+        try:
+            df = _fetch_chart_api(ticker, interval, end - timedelta(days=days), end)
+        except Exception:
+            df = pd.DataFrame()
+        if not df.empty:
+            return df
 
     if df.empty:
         raise ValueError(
