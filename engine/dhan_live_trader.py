@@ -1070,11 +1070,13 @@ class DhanLiveTrader:
             now = self._ist_now()
             minutes = now.hour * 60 + now.minute
             if minutes >= self.config.force_square_off_minutes:
-                print(f"  [DHAN] AUTO-SQUARE-OFF ({now.strftime('%H:%M')} IST): Closing all positions...")
-                for ticker in list(tickers):
+                to_close = [t for t in tickers
+                            if strip_ns(t) in portfolio.positions
+                            and strip_ns(t) not in self._cnc_holdings]
+                if to_close:
+                    print(f"  [DHAN] AUTO-SQUARE-OFF ({now.strftime('%H:%M')} IST): Closing all positions...")
+                for ticker in to_close:
                     base = strip_ns(ticker)
-                    if base in self._cnc_holdings:
-                        continue  # delivery holdings are not MIS — no forced square-off
                     if base in portfolio.positions:
                         pos = portfolio.positions[base]
                         self.cancel_sl_tp_orders(ticker)
