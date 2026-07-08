@@ -5,8 +5,16 @@ Default: 10 years of daily OHLCV data with automatic retry on failure.
 
 from datetime import datetime, timedelta
 
+import logging
+
 import pandas as pd
 import yfinance as yf
+
+# yfinance logs noisy "possibly delisted; no timezone found" errors to stderr
+# when its curl_cffi transport is blocked by a proxy. We catch that case and
+# fall back to the plain chart API, so silence the library's own logger to
+# avoid alarming (but harmless) output.
+logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 
 
 _CHART_API_UA = {"User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
