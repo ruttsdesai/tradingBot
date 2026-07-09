@@ -1387,14 +1387,30 @@ class DhanLiveTrader:
                 )
             )
 
+            waiting_logged = False
             try:
                 while True:
                     if not self._is_market_open():
                         now = self._ist_now()
-                        print(f"  [{now.strftime('%H:%M')}] Market closed — waiting...")
+                        # Log the "waiting" line once per closed-market stretch,
+                        # not every minute, so the console isn't flooded overnight.
+                        if not waiting_logged:
+                            print(f"  [{now.strftime('%H:%M')}] Market closed — waiting for 09:15 IST...")
+                            waiting_logged = True
                         time.sleep(60)  # check every minute
                         continue
-                    self.run_once(tickers)
+                    waiting_logged = False
+                    signals = self.run_once(tickers)
+                    # Heartbeat: continuous mode is otherwise silent when every
+                    # strategy says HOLD, which looks like the bot has frozen.
+                    now = self._ist_now()
+                    notable = [f"{t}=[{s}]" for t, s in (signals or {}).items()
+                               if s and ("BUY" in s or "SELL" in s)]
+                    if notable:
+                        print(f"  [{now.strftime('%H:%M')}] " + "  ".join(notable))
+                    else:
+                        n = len(signals or {})
+                        print(f"  [{now.strftime('%H:%M')}] cycle ok — {n} ticker(s) evaluated, no entries (all HOLD)")
                     time.sleep(self.config.poll_interval_seconds)
             except KeyboardInterrupt:
                 print("\n  Dhan live trader stopped by user.")
