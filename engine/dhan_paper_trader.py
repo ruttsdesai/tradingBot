@@ -42,6 +42,9 @@ class DhanPaperTrader(DhanLiveTrader):
         self._paper_positions: dict[str, dict] = {}  # base -> {qty, avg, entry}
         self._trades: list[dict] = []
         self._load_state()
+        # Write state immediately so `paper-status` shows the live portfolio
+        # from startup, even before the first trade fires.
+        self._save_state()
 
     # ------------------------------------------------------------------
     # State persistence
