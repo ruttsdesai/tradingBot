@@ -592,21 +592,21 @@ class DhanLiveTrader:
         In intraday mode, fetches 5 days of N-minute bars (e.g. 5m, 15m).
         In daily mode, fetches N years of 1d bars.
         """
-        from data.stocks import fetch_stock_data
+        from data.stocks import fetch_stock_data, fetch_intraday_data
 
         result: dict[str, pd.DataFrame] = {}
 
         if self.config.intraday:
             # Intraday: fetch 7 calendar days of N-minute bars (enough for
-            # all strategy warmups — 7 days of 5m = ~525 bars). yfinance
-            # limits 1m=7d, 5m/15m/30m=60d, 1h=730d. We use 7d for all
-            # to stay well within limits and keep DataFrames fast.
+            # all strategy warmups — 7 days of 5m = ~525 bars). Use the
+            # period-based intraday fetcher, which always includes today's
+            # live bars (a date-range fetch drops the current session, so the
+            # trader would otherwise evaluate on a frozen prior-day close).
             interval = self.config.intraday_interval
-            fetch_years = 7.0 / 365.0  # 7 calendar days
 
             for ticker in tickers:
                 try:
-                    df = fetch_stock_data(ticker, years=fetch_years, interval=interval)
+                    df = fetch_intraday_data(ticker, interval=interval, days=7)
                     result[ticker] = df
                 except Exception as e:
                     print(f"  [DHAN] Failed to fetch intraday bars for {ticker}: {e}")

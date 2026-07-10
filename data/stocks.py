@@ -74,6 +74,10 @@ def fetch_stock_data(
     """
     end = datetime.now()
     start = end - timedelta(days=365 * years)
+    # yfinance treats `end` as EXCLUSIVE and date-only, so passing today's
+    # date drops today's bars entirely — a live intraday trader would then
+    # see only yesterday's (frozen) close. Add a day so today is included.
+    end_exclusive = end + timedelta(days=1)
 
     stock = yf.Ticker(ticker)
 
@@ -84,7 +88,7 @@ def fetch_stock_data(
         try:
             df = stock.history(
                 start=start.strftime("%Y-%m-%d"),
-                end=end.strftime("%Y-%m-%d"),
+                end=end_exclusive.strftime("%Y-%m-%d"),
                 interval=interval,
             )
         except Exception:
