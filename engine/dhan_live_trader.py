@@ -36,6 +36,7 @@ from .notifier import (
     format_sl_msg,
     format_tp_msg,
     format_session_start,
+    format_daily_summary,
     format_error,
 )
 from strategies.base import BaseStrategy, Signal, StrategyResult
@@ -1388,10 +1389,19 @@ class DhanLiveTrader:
             )
 
             waiting_logged = False
+            market_was_open = False
             try:
                 while True:
                     if not self._is_market_open():
                         now = self._ist_now()
+                        # Market just closed after a trading session — send the
+                        # end-of-day summary once, before going quiet.
+                        if market_was_open:
+                            try:
+                                self._send_daily_summary()
+                            except Exception as e:
+                                print(f"  [summary] failed: {e}")
+                            market_was_open = False
                         # Log the "waiting" line once per closed-market stretch,
                         # not every minute, so the console isn't flooded overnight.
                         if not waiting_logged:
@@ -1400,6 +1410,7 @@ class DhanLiveTrader:
                         time.sleep(60)  # check every minute
                         continue
                     waiting_logged = False
+                    market_was_open = True
                     signals = self.run_once(tickers)
                     # Heartbeat: continuous mode is otherwise silent when every
                     # strategy says HOLD, which looks like the bot has frozen.
@@ -1414,3 +1425,24 @@ class DhanLiveTrader:
                     time.sleep(self.config.poll_interval_seconds)
             except KeyboardInterrupt:
                 print("\n  Dhan live trader stopped by user.")
+
+    # ------------------------------------------------------------------
+    # End-of-day summary
+    # ------------------------------------------------------------------
+
+    def _send_daily_summary(self) -> None:
+        """Send an end-of-day summary via the notifier.
+
+        Base implementation reports the account equity. DhanPaperTrader
+        overrides this with full trade statistics from its virtual ledger.
+        """
+        acct = self.get_account_info()
+        equity = acct.get("equity", 0.0)
+        day = self._ist_now().strftime("%Y-%m-%d")
+        msg = format_daily_summary(
+            getattr(self, "_mode_label", "") or ("SANDBOX" if self.config.sandbox else "LIVE"),
+            day, total_trades=0, closed_trades=0, wins=0, realized_pnl=0.0,
+            equity=equity, initial_capital=self.config.initial_capital, open_positions=[],
+        )
+        print(f"  [SUMMARY] {day}: equity Rs {equity:,.2f}")
+        self._notify(msg)

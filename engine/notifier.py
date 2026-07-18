@@ -193,3 +193,20 @@ def format_session_start(mode: str, strategy: str, tickers: list[str],
 def format_error(msg: str) -> str:
     """Format an error notification."""
     return f"⚠️ *Error*: {msg}"
+
+
+def format_daily_summary(mode: str, day: str, total_trades: int, closed_trades: int,
+                         wins: int, realized_pnl: float, equity: float,
+                         initial_capital: float, open_positions: list[str]) -> str:
+    """Format an end-of-day summary notification."""
+    win_rate = (wins / closed_trades * 100) if closed_trades else 0.0
+    total_ret = ((equity - initial_capital) / initial_capital * 100) if initial_capital else 0.0
+    pnl_emoji = "🟢" if realized_pnl > 0 else ("🔴" if realized_pnl < 0 else "⚪")
+    pos_str = ", ".join(open_positions) if open_positions else "none (flat)"
+    return (
+        f"{pnl_emoji} *Day Summary ({mode})* — {day}\\n"
+        f"Realized P&L: Rs {realized_pnl:+,.2f}\\n"
+        f"Trades: {total_trades} ({closed_trades} closed, {win_rate:.0f}% win)\\n"
+        f"Equity: Rs {equity:,.2f} ({total_ret:+.2f}% since start)\\n"
+        f"Open overnight: {pos_str}"
+    )

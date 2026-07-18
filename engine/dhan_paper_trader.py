@@ -204,3 +204,31 @@ class DhanPaperTrader(DhanLiveTrader):
 
     def get_order_status(self, order_id: str) -> str:
         return ""
+
+    # ------------------------------------------------------------------
+    # End-of-day summary (full stats from the virtual ledger)
+    # ------------------------------------------------------------------
+
+    def _send_daily_summary(self) -> None:
+        from .notifier import format_daily_summary
+
+        day = self._ist_now().strftime("%Y-%m-%d")
+        # Only count trades executed today, so each session's summary is
+        # about that day rather than the whole test period.
+        todays = [t for t in self._trades if str(t.get("ts", "")).startswith(day)]
+        sells = [t for t in todays if t["side"] == "SELL"]
+        wins = sum(1 for t in sells if t.get("pnl", 0) > 0)
+        realized_today = sum(t.get("pnl", 0.0) for t in sells)
+
+        pos_value = sum(p["qty"] * self._last_price.get(b, p["avg"])
+                        for b, p in self._paper_positions.items())
+        equity = self._paper_cash + pos_value
+        open_pos = list(self._paper_positions.keys())
+
+        print(f"  [SUMMARY] {day}: {len(todays)} trades, "
+              f"realized Rs {realized_today:+,.2f}, equity Rs {equity:,.2f}")
+        self._notify(format_daily_summary(
+            "PAPER", day, total_trades=len(todays), closed_trades=len(sells),
+            wins=wins, realized_pnl=realized_today, equity=equity,
+            initial_capital=self.config.initial_capital, open_positions=open_pos,
+        ))
