@@ -35,6 +35,7 @@ nul
 
 # Portfolio state (regenerated on each run)
 state/portfolio_state.json
+state/dhan_paper_state.json
 
 # Jupyter
 .ipynb_checkpoints/
