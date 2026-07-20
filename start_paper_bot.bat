@@ -15,13 +15,19 @@ echo.
 echo ==== Updating bot to latest code ====
 git pull
 
+REM Build a timestamped log file name (locale-safe via PowerShell).
+if not exist logs mkdir logs
+for /f %%i in ('powershell -NoProfile -Command "Get-Date -Format yyyy-MM-dd_HH-mm"') do set LOGSTAMP=%%i
+set LOGFILE=logs\paper_%LOGSTAMP%.log
+
 echo.
 echo ==== Starting PAPER trading (leave this window open all day) ====
 echo     Stop anytime with Ctrl+C. Check status by double-clicking
 echo     check_paper_status.bat in a second window.
+echo     A full copy of this window is being saved to: %LOGFILE%
 echo.
 
-python cli.py dhan-live --paper --capital 100000 -t AXISBANK.NS -t ASIANPAINT.NS -t BAJFINANCE.NS -t "M&M.NS" -t SUNPHARMA.NS -t KOTAKBANK.NS -s rsi_mean_revert -s bollinger_bands -s ma_crossover
+python cli.py dhan-live --paper --capital 100000 -t AXISBANK.NS -t ASIANPAINT.NS -t BAJFINANCE.NS -t "M&M.NS" -t SUNPHARMA.NS -t KOTAKBANK.NS -s rsi_mean_revert -s bollinger_bands -s ma_crossover --log-file "%LOGFILE%"
 
 echo.
 echo ==== Bot stopped. Press any key to close this window. ====

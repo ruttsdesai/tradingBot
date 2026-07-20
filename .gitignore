@@ -50,3 +50,6 @@ data/synthetic/
 
 # Cached real intraday data (fetched ad-hoc, regeneratable)
 data/real5m/
+
+# Session log files (bot console output)
+logs/

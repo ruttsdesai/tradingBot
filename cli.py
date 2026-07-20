@@ -25,6 +25,54 @@ import click
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 
+class _Tee:
+    """Duplicate a text stream to the console AND a log file.
+
+    Writes are flushed on every call so the file stays live during a
+    long-running session and survives Ctrl+C. Cross-platform (works the
+    same on Windows, macOS and the cloud), unlike a shell pipe/tee.
+    """
+
+    def __init__(self, stream, fh):
+        self._stream = stream
+        self._fh = fh
+
+    def write(self, data):
+        self._stream.write(data)
+        self._stream.flush()
+        try:
+            self._fh.write(data)
+            self._fh.flush()
+        except Exception:
+            pass  # never let logging break the bot
+        return len(data)
+
+    def flush(self):
+        self._stream.flush()
+        try:
+            self._fh.flush()
+        except Exception:
+            pass
+
+    def __getattr__(self, name):
+        # Delegate anything else (isatty, encoding, fileno, …) to the console
+        return getattr(self._stream, name)
+
+
+def _start_logging(log_file: str):
+    """Redirect stdout+stderr through a tee into `log_file`. Returns the
+    open file handle (kept alive for the process lifetime)."""
+    log_file = os.path.abspath(log_file)
+    os.makedirs(os.path.dirname(log_file), exist_ok=True)
+    fh = open(log_file, "a", encoding="utf-8", buffering=1)
+    fh.write(f"\n===== session started {datetime.now():%Y-%m-%d %H:%M:%S} =====\n")
+    fh.flush()
+    sys.stdout = _Tee(sys.stdout, fh)
+    sys.stderr = _Tee(sys.stderr, fh)
+    print(f"  [LOG] Console output is being saved to: {log_file}")
+    return fh
+
+
 def load_config():
     """Load YAML config with environment variable substitution."""
     import yaml
@@ -1564,7 +1612,9 @@ def ibkr_live(ticker, market, strategy, once, port):
 @click.option("--intraday-interval", default=None,
               type=click.Choice(["1m", "5m", "15m", "30m", "1h"]),
               help="Intraday candle interval (default: 5m or config value)")
-def dhan_live(ticker, strategies, all_strategies, once, live_mode, paper_mode, capital, intraday, intraday_interval):
+@click.option("--log-file", default=None,
+              help="Also save all console output to this file (created if needed)")
+def dhan_live(ticker, strategies, all_strategies, once, live_mode, paper_mode, capital, intraday, intraday_interval, log_file):
     """Run live trading via Dhan (SANDBOX by default).
 
     Requires a Dhan account and API credentials in .env:
@@ -1589,6 +1639,11 @@ def dhan_live(ticker, strategies, all_strategies, once, live_mode, paper_mode, c
 
     if paper_mode and live_mode:
         raise click.UsageError("--paper and --live are mutually exclusive")
+
+    # Start teeing console output to a log file if requested (before any
+    # meaningful output, so the whole session is captured).
+    if log_file:
+        _start_logging(log_file)
 
     dhan_cfg = CONFIG.get("dhan_live_trading", {})
     api_cfg = CONFIG.get("api", {})

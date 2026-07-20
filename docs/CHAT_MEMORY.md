@@ -1,7 +1,63 @@
 # Chat Memory — tradingBot
 
-> Updated: 2026-07-02
-> Sessions: Dhan SL/TP, crypto multi-strategy, scheduler continuous, security IDs, live trading, SL/TP reconcile + OCO + dual scheduler
+> Updated: 2026-07-20
+> Sessions: Dhan SL/TP, crypto multi-strategy, scheduler continuous, security IDs, live trading, SL/TP reconcile + OCO + dual scheduler, **paper-trading P&L fix + consensus voting + session logging**
+
+---
+
+## 🔴 HANDOFF — Read this first (2026-07-20 session)
+
+**Branch:** `claude/continued-session-4tt3yo` (PR #1). All work below is committed + pushed here.
+
+**What we're doing:** zero-cost forward paper testing of the Dhan intraday bot on ₹100k virtual
+capital, 6 tickers (AXISBANK, ASIANPAINT, BAJFINANCE, M&M, SUNPHARMA, KOTAKBANK) × 3 strategies
+(RSI_MeanReversion, BollingerBands, MA_Crossover). Goal: ~2 weeks of clean sessions → go/no-go.
+User runs it on their **laptop** via double-clicking `start_paper_bot.bat` (leaves window open all day).
+
+**Three bugs fixed this session (all pushed):**
+1. **False daily-loss lockout (`-34.20%`) — FIXED.** `run_once` in `engine/dhan_live_trader.py`
+   mutated `portfolio.positions` on every fill but never updated `portfolio.current_cash`, so
+   `total_value` (= cash + position marks) dropped on each sell → spurious ~30% "loss" tripped the
+   daily-loss limiter and blocked all buys within minutes. Now every fill site debits (buy) /
+   credits (sell) `current_cash` so `total_value` stays invariant across a fill. Confirmed in
+   production: 2026-07-20 paper run did 32 trades all day with no lockout, +₹76 realized, 69% win.
+2. **Churn (buy/sell same stock every cycle) — FIXED via consensus voting.** Replaced first-mover
+   execution with a **majority vote** across all strategies: BUY only if `#BUY > #SELL`, SELL only
+   if `#SELL > #BUY`; ties / all-HOLD do nothing. The RSI-BUY-vs-MA-SELL round-trip now nets to
+   HOLD. Trade log/notify carry a `Consensus(n/N BUY: names)` label — **that label is the user's
+   visual confirmation the new logic is live.**
+3. **Config too tight for ₹100k.** `config.yaml` → `dhan_live_trading`: `max_positions` 2→6,
+   `max_allocation_pct` 0.35→0.16 (6 × 16% ≈ 96% deployed). Now holds one position per ticker
+   instead of capping at 2. (initial_capital stays 1027 for real-money live mode; `--capital`
+   overrides it for paper.)
+
+**Session logging added (this is the last thing done):**
+- `cli.py`: new `_Tee` class + `_start_logging()` + `--log-file PATH` option on `dhan-live`.
+  Tees stdout+stderr to a file (flush every write, survives Ctrl+C, cross-platform). Verified working.
+- `start_paper_bot.bat`: makes `logs/`, builds a timestamped name via PowerShell
+  `Get-Date -Format yyyy-MM-dd_HH-mm`, passes `--log-file "logs\paper_<stamp>.log"`.
+- `logs/` added to `.gitignore`.
+- Result: each session auto-saves the full console to `logs/paper_<date>.log`. User can send that
+  file instead of copy-pasting. **Console-only was the old state — nothing was written to disk except
+  `state/dhan_paper_state.json` (the trade ledger that `paper-status` reads).**
+
+**State of play / next steps:**
+- User confirmed `git pull` → "Already up to date" and restarted; bot showed correct startup and
+  `[HH:MM] Market closed — waiting for 09:15 IST` (expected after 15:30). They now have ALL fixes.
+- Earlier 2026-07-20 run (32 trades, KOTAKBANK flip) was PRE-consensus — that churn won't recur.
+- **Next:** after the next full session, read `logs/paper_<date>.log` (or `paper-status`). Confirm
+  (a) no daily-loss lockout, (b) `Consensus(...)` labels present, (c) no same-stock flips. Then let
+  it accumulate ~2 weeks before the go/no-go call.
+- Open (not yet requested by user): crypto backtest with buy-and-hold benchmark column; Telegram
+  end-of-day summary setup via my.telegram.org (Telethon path — BotFather was rate-limited).
+
+**Security note:** user has repeatedly pasted Dhan JWT access tokens into chat. They expire in 24h;
+always tell them to regenerate rather than reuse, tokens go only in git-ignored `.env`, never commit
+`.env`. Paper mode needs no credentials at all.
+
+---
+
+> Earlier sessions below.
 
 ---
 
