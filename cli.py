@@ -2136,5 +2136,73 @@ def day_trade(ticker, interval, days, capital, commission, csv_file, compare, ch
             click.echo(f"\n  [Chart] Saved parallel-strategy chart -> {saved}")
 
 
+@cli.command("telegram-setup")
+def telegram_setup():
+    """One-time Telegram setup + test message (no @BotFather needed).
+
+    Uses the Telethon user-account backend: sends alerts to your own
+    Telegram "Saved Messages" using API_ID/API_HASH from
+    https://my.telegram.org/apps. Run this ONCE to log in (it prompts for
+    your phone number + the code Telegram texts you) and to confirm it
+    works — after that the bot reuses the saved session silently.
+
+    Setup:
+      1. Go to https://my.telegram.org -> "API development tools"
+      2. Create an app (any name), copy the api_id and api_hash
+      3. Add to your .env file:
+             TG_API_ID=1234567
+             TG_API_HASH=abc123...
+      4. Run: python cli.py telegram-setup
+    """
+    api_cfg = CONFIG.get("api", {})
+    tg_api_id = api_cfg.get("tg_api_id", 0)
+    tg_api_hash = api_cfg.get("tg_api_hash", "")
+    bot_token = api_cfg.get("telegram_bot_token", "")
+    chat_id = api_cfg.get("telegram_chat_id", "")
+
+    test_msg = (
+        "✅ Trading bot connected to Telegram\n"
+        "You'll get an end-of-day summary here after each paper session."
+    )
+
+    # Prefer the user-account (Telethon) backend — no BotFather.
+    if tg_api_id and tg_api_hash:
+        try:
+            import telethon  # noqa: F401
+        except ImportError:
+            click.echo("  [ERROR] Telethon isn't installed. Run:  pip install -r requirements.txt")
+            return
+        from engine.notifier import TelegramUserNotifier
+
+        click.echo("  Using Telegram USER account (Telethon — no bot needed).")
+        click.echo("  First run will ask for your phone number and the login code Telegram sends you.\n")
+        notifier = TelegramUserNotifier(
+            api_id=int(tg_api_id), api_hash=str(tg_api_hash),
+        )
+        ok = notifier.send(test_msg)
+        if ok:
+            click.echo("\n  ✅ Success! Check your Telegram 'Saved Messages' for the test message.")
+            click.echo("  The bot will now send summaries there automatically — no further setup.")
+        else:
+            click.echo("\n  ❌ Could not send. Double-check TG_API_ID / TG_API_HASH in .env.")
+        return
+
+    # Fallback: Bot API (needs @BotFather token + chat id)
+    if bot_token and chat_id:
+        from engine.notifier import TelegramNotifier
+
+        click.echo("  Using Telegram BOT API (@BotFather token).")
+        notifier = TelegramNotifier(bot_token=bot_token, chat_id=chat_id)
+        if notifier.send(test_msg):
+            click.echo("  ✅ Success! Check your Telegram for the test message.")
+        else:
+            click.echo("  ❌ Could not send. Check TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID in .env.")
+        return
+
+    click.echo("  [ERROR] No Telegram credentials found in .env.")
+    click.echo("  Recommended (no BotFather): get api_id + api_hash from https://my.telegram.org/apps,")
+    click.echo("  then add TG_API_ID and TG_API_HASH to your .env and re-run this command.")
+
+
 if __name__ == "__main__":
     cli()
