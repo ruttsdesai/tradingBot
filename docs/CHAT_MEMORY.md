@@ -31,7 +31,7 @@ User runs it on their **laptop** via double-clicking `start_paper_bot.bat` (leav
    instead of capping at 2. (initial_capital stays 1027 for real-money live mode; `--capital`
    overrides it for paper.)
 
-**Session logging added (this is the last thing done):**
+**Session logging added:**
 - `cli.py`: new `_Tee` class + `_start_logging()` + `--log-file PATH` option on `dhan-live`.
   Tees stdout+stderr to a file (flush every write, survives Ctrl+C, cross-platform). Verified working.
 - `start_paper_bot.bat`: makes `logs/`, builds a timestamped name via PowerShell
@@ -41,15 +41,37 @@ User runs it on their **laptop** via double-clicking `start_paper_bot.bat` (leav
   file instead of copy-pasting. **Console-only was the old state — nothing was written to disk except
   `state/dhan_paper_state.json` (the trade ledger that `paper-status` reads).**
 
-**State of play / next steps:**
-- User confirmed `git pull` → "Already up to date" and restarted; bot showed correct startup and
-  `[HH:MM] Market closed — waiting for 09:15 IST` (expected after 15:30). They now have ALL fixes.
-- Earlier 2026-07-20 run (32 trades, KOTAKBANK flip) was PRE-consensus — that churn won't recur.
-- **Next:** after the next full session, read `logs/paper_<date>.log` (or `paper-status`). Confirm
-  (a) no daily-loss lockout, (b) `Consensus(...)` labels present, (c) no same-stock flips. Then let
-  it accumulate ~2 weeks before the go/no-go call.
-- Open (not yet requested by user): crypto backtest with buy-and-hold benchmark column; Telegram
-  end-of-day summary setup via my.telegram.org (Telethon path — BotFather was rate-limited).
+**Telegram notifications — DONE (BotFather was rate-limited, used user-account path):**
+- Used the Telethon **user-account** backend (no bot): alerts post to the user's own Telegram
+  "Saved Messages". Creds `TG_API_ID` / `TG_API_HASH` from my.telegram.org/apps live in `.env`
+  (config.yaml already maps them). Trader auto-selects `TelegramUserNotifier` when they're set.
+- Added `telegram-setup` CLI command: does the one-time interactive phone+code login up front
+  (creates the `.session` file) and sends a test message — instead of that login first triggering
+  mid-run at end-of-day. **User ran it successfully on 2026-07-20 — logged in, test message delivered.**
+- Fixed `engine/notifier.py` `TelegramUserNotifier`: was closing the event loop without
+  disconnecting the client → loud 'Event loop is closed' teardown tracebacks (esp. Python 3.14) AND
+  only the FIRST send of a run worked (cached client bound to a closed loop). Now connects a fresh
+  client per send, disconnects in a `finally`, uses `is_user_authorized()` (interactive login only
+  when no session). Runtime sends (buy/sell alert on every trade + EOD summary) are now clean/repeatable.
+- **Setup files on user's laptop:** `.env` is a hidden dotfile literally named `.env` (they couldn't
+  find it in Explorer — told them `notepad .env` from the tradingBot folder). Laptop is `C:\...`,
+  user is "Acer" account, Python 3.14. Session file must live on the laptop (where the bot runs), not
+  in this ephemeral cloud container — Telegram login can't be done from here.
+
+**State of play — COLLECTING DATA (paused here, 2026-07-20):**
+- All 5 improvements committed+pushed to `claude/continued-session-4tt3yo`: (1) daily-loss cash-sync,
+  (2) consensus voting, (3) wider limits, (4) session logging, (5) Telegram alerts.
+- Earlier 2026-07-20 run (32 trades, +Rs76, 69% win, KOTAKBANK flip) was PRE-consensus — proved the
+  cash-fix works in production (no lockout across 32 trades); the churn won't recur under consensus.
+- User is leaving the bot to **collect ~2 weeks of clean paper data** before a go/no-go call.
+- **LAST ACTION USER STILL OWES:** one more `git pull` on the laptop before the next session, to pick
+  up the notifier fix (commit b4ac2f9). Everything else is already on their machine.
+- **NEXT TIME:** ask for `logs/paper_<date>.log` (or the Telegram summaries / `paper-status`). Verify
+  in the wild: (a) no daily-loss lockout, (b) `Consensus(...)` labels on trades, (c) no same-stock
+  flips, (d) Telegram alerts arriving. Track P&L trend, win rate, avg win/loss, max drawdown, trade
+  count/day. After ~2 clean weeks → decide: add real money (start tiny, Rs 5-10k) / keep paper /
+  retune (drop weak ticker or strategy).
+- Open (offered, NOT requested): crypto backtest with buy-and-hold benchmark column.
 
 **Security note:** user has repeatedly pasted Dhan JWT access tokens into chat. They expire in 24h;
 always tell them to regenerate rather than reuse, tokens go only in git-ignored `.env`, never commit
