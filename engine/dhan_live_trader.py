@@ -1136,39 +1136,46 @@ class DhanLiveTrader:
                     low_vol = True
                     print(f"  [DHAN] Low volatility for {ticker}: ATR/close={vol_pct:.3%} < {self.config.min_volatility_pct:.2%} — skipping BUYs")
 
-            # Track which strategies signaled this ticker
+            # Evaluate every strategy once and tally its vote. Trading is
+            # driven by CONSENSUS, not first-mover: a single strategy can no
+            # longer round-trip a position while others disagree (the churn
+            # where RSI keeps buying what MA_Crossover keeps selling).
             per_strategy_signals: list[str] = []
+            buy_votes: list[str] = []
+            sell_votes: list[str] = []
 
             for strat in self.strategies:
                 # Pre-compute indicators (each strategy has its own prepare)
                 strat.prepare(df)
                 result: StrategyResult = strat.evaluate(df, idx)
                 per_strategy_signals.append(f"{strat.name}={result.signal.name}")
+                if result.signal == Signal.BUY:
+                    buy_votes.append(strat.name)
+                elif result.signal == Signal.SELL:
+                    sell_votes.append(strat.name)
 
             signals[ticker] = " | ".join(per_strategy_signals)
 
-            # Execute trades — iterate all strategies. Once any strategy
-            # takes action (BUY or SELL), stop processing further strategies
-            # for this ticker in this cycle to prevent churning (e.g. one
-            # strategy buying and another immediately selling at same price).
-            for strat in self.strategies:
-                # Re-evaluate to get fresh result for this strategy
-                result: StrategyResult = strat.evaluate(df, idx)
+            # Majority decides the action. A tie (equal BUY/SELL, or all HOLD)
+            # means no consensus → do nothing this cycle.
+            n_buy, n_sell = len(buy_votes), len(sell_votes)
+            total_strats = len(self.strategies)
+            consensus = None
+            if n_buy > n_sell:
+                consensus = Signal.BUY
+                vote_label = f"Consensus({n_buy}/{total_strats} BUY: {','.join(buy_votes)})"
+            elif n_sell > n_buy:
+                consensus = Signal.SELL
+                vote_label = f"Consensus({n_sell}/{total_strats} SELL: {','.join(sell_votes)})"
 
-                if result.signal == Signal.BUY:
-                    # Already holding?
-                    if base in portfolio.positions:
-                        continue
-
-                    # Intraday gate: stop buying after 3:00 PM
-                    if stop_buying:
-                        print(f"  [DHAN] BUY skipped for {ticker} [{strat.name}]: Past 3:00 PM — no new positions")
-                        continue
-
-                    # Volatility filter: skip if market is dead (checked once per ticker)
-                    if low_vol:
-                        continue
-
+            if consensus == Signal.BUY and base not in portfolio.positions:
+                # Intraday gate: stop buying after 3:00 PM
+                if stop_buying:
+                    print(f"  [DHAN] BUY skipped for {ticker}: Past 3:00 PM — no new positions")
+                # Volatility filter: skip if market is dead (checked once per ticker)
+                elif low_vol:
+                    pass
+                else:
                     # Size the position
                     max_value = portfolio.total_value * self.risk_manager.max_allocation_pct
                     if self.config.use_atr_sizing and atr_val and atr_val > 0:
@@ -1180,42 +1187,36 @@ class DhanLiveTrader:
 
                     risk = self.risk_manager.check_buy(portfolio, base, quantity, price)
                     if not risk.allowed:
-                        print(f"  [DHAN] BUY blocked for {ticker} [{strat.name}]: {risk.reason}")
-                        continue
-
-                    order = self.submit_buy(ticker, quantity)
-                    if order:
-                        print(
-                            f"  [DHAN] BUY  {ticker} x{order['qty']} "
-                            f"@ ~{order.get('filled_avg_price', 'MKT')}  [{strat.name}]"
-                        )
-                        self._notify(
-                            format_buy_msg(
-                                ticker, order["qty"], order.get("filled_avg_price"),
-                                strat.name, portfolio.total_value
+                        print(f"  [DHAN] BUY blocked for {ticker} [{vote_label}]: {risk.reason}")
+                    else:
+                        order = self.submit_buy(ticker, quantity)
+                        if order:
+                            print(
+                                f"  [DHAN] BUY  {ticker} x{order['qty']} "
+                                f"@ ~{order.get('filled_avg_price', 'MKT')}  [{vote_label}]"
                             )
-                        )
-                        # Mark position in portfolio so next strategy sees it,
-                        # and debit cash so total_value stays invariant across
-                        # the fill (otherwise the daily-loss limiter mis-fires).
-                        entry_price = order.get("filled_avg_price") or price
-                        portfolio.current_cash -= order["qty"] * entry_price
-                        portfolio.positions[base] = Position(
-                            ticker=base,
-                            quantity=order["qty"],
-                            avg_entry_price=entry_price,
-                            entry_date=datetime.now(),
-                        )
-                        # Place broker-level stop-loss and take-profit orders
-                        self._place_sl_tp_orders(ticker, base, order["qty"], entry_price)
-                        # Stop processing further strategies — position just opened
-                        break
+                            self._notify(
+                                format_buy_msg(
+                                    ticker, order["qty"], order.get("filled_avg_price"),
+                                    vote_label, portfolio.total_value
+                                )
+                            )
+                            # Debit cash so total_value stays invariant across
+                            # the fill (otherwise the daily-loss limiter mis-fires).
+                            entry_price = order.get("filled_avg_price") or price
+                            portfolio.current_cash -= order["qty"] * entry_price
+                            portfolio.positions[base] = Position(
+                                ticker=base,
+                                quantity=order["qty"],
+                                avg_entry_price=entry_price,
+                                entry_date=datetime.now(),
+                            )
+                            # Place broker-level stop-loss and take-profit orders
+                            self._place_sl_tp_orders(ticker, base, order["qty"], entry_price)
 
-                elif result.signal == Signal.SELL:
-                    pos = portfolio.positions.get(base)
-                    if pos is None or pos.quantity <= 0:
-                        continue
-
+            elif consensus == Signal.SELL and base in portfolio.positions:
+                pos = portfolio.positions.get(base)
+                if pos is not None and pos.quantity > 0:
                     # Cancel SL/TP orders before selling (they're no longer needed)
                     self.cancel_sl_tp_orders(ticker)
 
@@ -1223,7 +1224,7 @@ class DhanLiveTrader:
                     if order:
                         print(
                             f"  [DHAN] SELL {ticker} x{order['qty']} "
-                            f"@ ~{order.get('filled_avg_price', 'MKT')}  [{strat.name}]"
+                            f"@ ~{order.get('filled_avg_price', 'MKT')}  [{vote_label}]"
                         )
                         # Calculate P&L if possible
                         pnl = None
@@ -1233,15 +1234,13 @@ class DhanLiveTrader:
                         self._notify(
                             format_sell_msg(
                                 ticker, order["qty"], order.get("filled_avg_price"),
-                                strat.name, pnl
+                                vote_label, pnl
                             )
                         )
                         # Credit cash and remove from portfolio (keeps
                         # total_value invariant across the fill)
                         portfolio.current_cash += order["qty"] * (exit_price or price)
                         del portfolio.positions[base]
-                        # Stop processing further strategies — position just closed
-                        break
 
             # Check stop-loss / take-profit
             if base in portfolio.positions:
