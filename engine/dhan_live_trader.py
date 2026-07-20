@@ -1083,8 +1083,10 @@ class DhanLiveTrader:
                         self.cancel_sl_tp_orders(ticker)
                         order = self.submit_sell(ticker, pos.quantity)
                         if order:
-                            pnl = (order.get("filled_avg_price", 0) - pos.avg_entry_price) * pos.quantity
+                            exit_price = order.get("filled_avg_price") or portfolio.current_prices.get(base, pos.avg_entry_price)
+                            pnl = (exit_price - pos.avg_entry_price) * pos.quantity
                             print(f"  [DHAN] SQUARE-OFF {ticker} x{pos.quantity} @ ~{order.get('filled_avg_price', 'MKT')} | P&L: Rs {pnl:+.2f}")
+                            portfolio.current_cash += order["qty"] * exit_price
                             del portfolio.positions[base]
                         else:
                             print(f"  [DHAN] SQUARE-OFF {ticker} FAILED — position may remain open!")
@@ -1193,8 +1195,11 @@ class DhanLiveTrader:
                                 strat.name, portfolio.total_value
                             )
                         )
-                        # Mark position in portfolio so next strategy sees it
+                        # Mark position in portfolio so next strategy sees it,
+                        # and debit cash so total_value stays invariant across
+                        # the fill (otherwise the daily-loss limiter mis-fires).
                         entry_price = order.get("filled_avg_price") or price
+                        portfolio.current_cash -= order["qty"] * entry_price
                         portfolio.positions[base] = Position(
                             ticker=base,
                             quantity=order["qty"],
@@ -1231,7 +1236,9 @@ class DhanLiveTrader:
                                 strat.name, pnl
                             )
                         )
-                        # Remove from portfolio
+                        # Credit cash and remove from portfolio (keeps
+                        # total_value invariant across the fill)
+                        portfolio.current_cash += order["qty"] * (exit_price or price)
                         del portfolio.positions[base]
                         # Stop processing further strategies — position just closed
                         break
@@ -1245,6 +1252,7 @@ class DhanLiveTrader:
                     order = self.submit_sell(ticker, pos.quantity)
                     if order:
                         print(f"  [DHAN] STOP-LOSS {ticker}: {risk.reason}")
+                        portfolio.current_cash += order["qty"] * (order.get("filled_avg_price") or price)
                         del portfolio.positions[base]
                         self._notify(
                             format_sl_msg(ticker, risk.reason, self.strategy.name)
@@ -1255,6 +1263,7 @@ class DhanLiveTrader:
                     order = self.submit_sell(ticker, pos.quantity)
                     if order:
                         print(f"  [DHAN] TAKE-PROFIT {ticker}: {risk.reason}")
+                        portfolio.current_cash += order["qty"] * (order.get("filled_avg_price") or price)
                         del portfolio.positions[base]
                         self._notify(
                             format_tp_msg(ticker, risk.reason, self.strategy.name)
@@ -1265,6 +1274,7 @@ class DhanLiveTrader:
                     order = self.submit_sell(ticker, pos.quantity)
                     if order:
                         print(f"  [DHAN] TRAILING-STOP {ticker}: {risk.reason}")
+                        portfolio.current_cash += order["qty"] * (order.get("filled_avg_price") or price)
                         del portfolio.positions[base]
                         self._notify(
                             format_sell_msg(
@@ -1290,6 +1300,7 @@ class DhanLiveTrader:
                             pnl = (order.get("filled_avg_price", 0) - pos.avg_entry_price) * pos.quantity if order.get("filled_avg_price") and pos.avg_entry_price > 0 else None
                             print(f"  [DHAN] TIME-EXIT {ticker}: Held {hold_minutes:.0f}m, "
                                   f"P&L {pnl_pct:+.2%} < {self.config.min_profit_threshold_pct:.1%} threshold")
+                            portfolio.current_cash += order["qty"] * (order.get("filled_avg_price") or price)
                             del portfolio.positions[base]
                             self._notify(
                                 format_sell_msg(
