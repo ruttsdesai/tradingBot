@@ -73,6 +73,28 @@ User runs it on their **laptop** via double-clicking `start_paper_bot.bat` (leav
   retune (drop weak ticker or strategy).
 - Open (offered, NOT requested): crypto backtest with buy-and-hold benchmark column.
 
+**2026-07-21 (Tue) follow-up — slow data fetch broke intraday timing (FIXED behavioral half):**
+- Symptom: Tue paper run showed a trade at 16:14 (after 15:30 close) and the 15:10 square-off
+  never fired (AXISBANK + ASIANPAINT left open overnight). Clock verified CORRECT
+  (`datetime.now(ist)` == laptop == real IST 16:22), so NOT a timezone issue.
+- Log (`logs/paper_2026-07-21_10-13.log`) showed only ~4 cycles in 6 hours (heartbeats at 10:13,
+  11:25, 11:27, then 16:15) — with 60s polling there should be ~360. **Root cause: `get_historical_bars`
+  (yfinance, 6 tickers) takes ~60-90 min/cycle on the laptop (rate-limiting). No cycle fell in the
+  15:10-15:30 window → square-off skipped; a cycle that started pre-close finished at 16:15 → traded
+  after hours.** Not sleep (user confirmed), not multiple instances (tasklist empty).
+- FIX (committed 6b1a94e): extracted `_enforce_intraday_timing(portfolio, tickers)` in
+  dhan_live_trader.py; run_once now `sync_portfolio()` → guard → fetch → guard again. Guard squares
+  off all positions at/after 15:10 and refuses to trade when market closed, evaluated on the current
+  clock BEFORE the slow fetch. Also `timeout=20` on yfinance `history()`. Tested: squares off at
+  >=15:10, halts pre-open/post-close, a 16:14 cycle returns {} without calling the fetch.
+- **STILL OPEN — the fetch SLOWNESS itself is not yet fixed** (only its data-corruption fallout is
+  contained). With 70-min cycles the bot barely trades intraday. NEXT: user to run a one-line fetch
+  timing test on the laptop — `python -c "import time; from data.stocks import fetch_intraday_data;
+  s=time.time(); df=fetch_intraday_data('AXISBANK.NS','5m',days=7); print(len(df),'rows',round(time.time()-s,1),'s')"`
+  — to measure/confirm, then fix properly (caching last-good bars / refetch less often than every 60s /
+  alternate data source). Tue 07-21 data should be discarded from the go/no-go sample.
+- User must `git pull` on the laptop to get 6b1a94e before the next session.
+
 **Security note:** user has repeatedly pasted Dhan JWT access tokens into chat. They expire in 24h;
 always tell them to regenerate rather than reuse, tokens go only in git-ignored `.env`, never commit
 `.env`. Paper mode needs no credentials at all.
