@@ -90,6 +90,7 @@ def fetch_stock_data(
                 start=start.strftime("%Y-%m-%d"),
                 end=end_exclusive.strftime("%Y-%m-%d"),
                 interval=interval,
+                timeout=20,  # never let a single fetch hang the trading loop
             )
         except Exception:
             break
@@ -160,7 +161,7 @@ def fetch_intraday_data(
     df = pd.DataFrame()
     for attempt in range(max_retries):
         try:
-            df = stock.history(period=f"{days}d", interval=interval)
+            df = stock.history(period=f"{days}d", interval=interval, timeout=20)
         except Exception:
             break
         if not df.empty:

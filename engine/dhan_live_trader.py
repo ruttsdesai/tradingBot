@@ -1041,6 +1041,53 @@ class DhanLiveTrader:
     # Strategy Execution
     # ------------------------------------------------------------------
 
+    def _enforce_intraday_timing(self, portfolio, tickers: list[str]) -> bool:
+        """Apply intraday time-of-day rules on the *current* clock.
+
+        Returns True when the caller must stop this cycle:
+          - past 15:10 IST → square off every open position (MIS must be flat
+            by 15:20), then halt;
+          - market otherwise closed (before 09:15 or after 15:30) → halt with
+            no trading.
+        Returns False during the normal trading window so the cycle proceeds.
+
+        Called both before and after the (possibly slow) data fetch so a lagging
+        cycle can neither skip the square-off window nor trade after the close.
+        """
+        if not self.config.intraday:
+            return False
+
+        now = self._ist_now()
+        minutes = now.hour * 60 + now.minute
+
+        if minutes >= self.config.force_square_off_minutes:
+            to_close = [t for t in tickers
+                        if strip_ns(t) in portfolio.positions
+                        and strip_ns(t) not in self._cnc_holdings]
+            if to_close:
+                print(f"  [DHAN] AUTO-SQUARE-OFF ({now.strftime('%H:%M')} IST): Closing all positions...")
+            for ticker in to_close:
+                base = strip_ns(ticker)
+                if base in portfolio.positions:
+                    pos = portfolio.positions[base]
+                    self.cancel_sl_tp_orders(ticker)
+                    order = self.submit_sell(ticker, pos.quantity)
+                    if order:
+                        exit_price = order.get("filled_avg_price") or portfolio.current_prices.get(base, pos.avg_entry_price)
+                        pnl = (exit_price - pos.avg_entry_price) * pos.quantity
+                        print(f"  [DHAN] SQUARE-OFF {ticker} x{pos.quantity} @ ~{order.get('filled_avg_price', 'MKT')} | P&L: Rs {pnl:+.2f}")
+                        portfolio.current_cash += order["qty"] * exit_price
+                        del portfolio.positions[base]
+                    else:
+                        print(f"  [DHAN] SQUARE-OFF {ticker} FAILED — position may remain open!")
+            return True
+
+        # Before 09:15 or after 15:30 — never open/adjust positions off-session.
+        if not self._is_market_open():
+            return True
+
+        return False
+
     def run_once(self, tickers: list[str]) -> dict:
         """Execute one evaluation cycle.
 
@@ -1052,46 +1099,32 @@ class DhanLiveTrader:
         """
         dhan = self._init_client()
 
+        # Sync portfolio from broker (cheap: local in paper mode).
+        portfolio = self.sync_portfolio()
+
+        # ── Intraday timing guard (BEFORE the data fetch) ──────────
+        # The market-data fetch can be slow (yfinance rate-limiting), so a
+        # cycle can take many minutes. Enforcing square-off / market-closed
+        # rules here — on the CURRENT clock, before fetching — means a late
+        # cycle still squares off on time and never trades after the close.
+        if self._enforce_intraday_timing(portfolio, tickers):
+            return {}
+
         # Fetch recent bars (last 120 days for strategy warmup)
         data = self.get_historical_bars(tickers, days=120)
 
-        # Sync portfolio from broker
-        portfolio = self.sync_portfolio()
+        # Re-check timing AFTER the fetch: if the fetch itself pushed us past
+        # 15:10 (square-off) or 15:30 (close), halt now rather than opening or
+        # flipping positions with a market that has since closed.
+        if self._enforce_intraday_timing(portfolio, tickers):
+            return {}
+
         self.risk_manager.set_daily_start(portfolio.total_value)
 
         # Reconcile broker SL/TP orders: cancel dangling siblings after a
         # broker-side SL/TP fill, and protect positions that have no orders
         # (e.g. after a bot restart).
         self.reconcile_sl_tp(portfolio, tickers)
-
-        # ── Intraday auto-square-off gate ──────────────────────────
-        # At 3:10 PM IST, force-close ALL open positions (20 min before
-        # market close). MIS positions must be squared off by 3:20 PM.
-        if self.config.intraday:
-            now = self._ist_now()
-            minutes = now.hour * 60 + now.minute
-            if minutes >= self.config.force_square_off_minutes:
-                to_close = [t for t in tickers
-                            if strip_ns(t) in portfolio.positions
-                            and strip_ns(t) not in self._cnc_holdings]
-                if to_close:
-                    print(f"  [DHAN] AUTO-SQUARE-OFF ({now.strftime('%H:%M')} IST): Closing all positions...")
-                for ticker in to_close:
-                    base = strip_ns(ticker)
-                    if base in portfolio.positions:
-                        pos = portfolio.positions[base]
-                        self.cancel_sl_tp_orders(ticker)
-                        order = self.submit_sell(ticker, pos.quantity)
-                        if order:
-                            exit_price = order.get("filled_avg_price") or portfolio.current_prices.get(base, pos.avg_entry_price)
-                            pnl = (exit_price - pos.avg_entry_price) * pos.quantity
-                            print(f"  [DHAN] SQUARE-OFF {ticker} x{pos.quantity} @ ~{order.get('filled_avg_price', 'MKT')} | P&L: Rs {pnl:+.2f}")
-                            portfolio.current_cash += order["qty"] * exit_price
-                            del portfolio.positions[base]
-                        else:
-                            print(f"  [DHAN] SQUARE-OFF {ticker} FAILED — position may remain open!")
-                # Return early — no new evaluations after square-off
-                return {}
 
         # ── Intraday stop-buying gate ──────────────────────────────
         # After 3:00 PM IST, don't open new positions (only 30 min left).
