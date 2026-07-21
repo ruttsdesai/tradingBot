@@ -73,6 +73,36 @@ def _start_logging(log_file: str):
     return fh
 
 
+def _disable_windows_quickedit():
+    """Turn off the Windows console 'QuickEdit Mode'.
+
+    With QuickEdit on (the default), clicking or selecting text inside a
+    cmd/PowerShell window PAUSES the running program until a key is pressed —
+    which silently freezes the trading loop for as long as the selection sits
+    there. Disabling it means clicking in the window can no longer stall the
+    bot. No-op on non-Windows or if the console can't be configured.
+    """
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.windll.kernel32
+        STD_INPUT_HANDLE = -10
+        ENABLE_EXTENDED_FLAGS = 0x0080
+        ENABLE_QUICK_EDIT_MODE = 0x0040
+        handle = kernel32.GetStdHandle(STD_INPUT_HANDLE)
+        mode = wintypes.DWORD()
+        if kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            new_mode = (mode.value | ENABLE_EXTENDED_FLAGS) & ~ENABLE_QUICK_EDIT_MODE
+            if kernel32.SetConsoleMode(handle, new_mode):
+                print("  [CONSOLE] QuickEdit disabled — clicking in this window "
+                      "won't pause the bot.")
+    except Exception:
+        pass  # never let a console tweak break startup
+
+
 def load_config():
     """Load YAML config with environment variable substitution."""
     import yaml
@@ -1644,6 +1674,10 @@ def dhan_live(ticker, strategies, all_strategies, once, live_mode, paper_mode, c
     # meaningful output, so the whole session is captured).
     if log_file:
         _start_logging(log_file)
+
+    # Prevent an accidental click in the console from freezing the loop
+    # (Windows QuickEdit Mode). Safe no-op elsewhere.
+    _disable_windows_quickedit()
 
     dhan_cfg = CONFIG.get("dhan_live_trading", {})
     api_cfg = CONFIG.get("api", {})
