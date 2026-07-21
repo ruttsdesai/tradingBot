@@ -87,13 +87,23 @@ User runs it on their **laptop** via double-clicking `start_paper_bot.bat` (leav
   off all positions at/after 15:10 and refuses to trade when market closed, evaluated on the current
   clock BEFORE the slow fetch. Also `timeout=20` on yfinance `history()`. Tested: squares off at
   >=15:10, halts pre-open/post-close, a 16:14 cycle returns {} without calling the fetch.
-- **STILL OPEN — the fetch SLOWNESS itself is not yet fixed** (only its data-corruption fallout is
-  contained). With 70-min cycles the bot barely trades intraday. NEXT: user to run a one-line fetch
-  timing test on the laptop — `python -c "import time; from data.stocks import fetch_intraday_data;
-  s=time.time(); df=fetch_intraday_data('AXISBANK.NS','5m',days=7); print(len(df),'rows',round(time.time()-s,1),'s')"`
-  — to measure/confirm, then fix properly (caching last-good bars / refetch less often than every 60s /
-  alternate data source). Tue 07-21 data should be discarded from the go/no-go sample.
-- User must `git pull` on the laptop to get 6b1a94e before the next session.
+- **CORRECTED root cause (fetch is NOT slow):** user measured a single intraday fetch at **4.1s / 525
+  rows** on the laptop. So the 72-min and 288-min gaps are NOT fetch latency (normal cycles were ~2 min
+  apart, e.g. 11:25→11:27). The real cause is almost certainly **the OS suspending/throttling the Python
+  process while the laptop is idle** (Windows power-saving / modern standby freezes background apps even
+  without formal sleep; gaps line up with user-away periods). User said it didn't sleep/hibernate, but
+  modern-standby throttling doesn't register as "sleep".
+- Added a **stall detector** (commit 79db49d): run loop prints `[WARN] N min gap since last cycle —
+  bot was paused (laptop sleep/power-saving?)` when >~5 min elapse between cycles. Next session's log
+  will confirm suspension definitively.
+- **FIX for the user (laptop, not code):** keep the process alive all session — Windows Settings →
+  System → Power & battery → Screen & sleep → **"When plugged in, put device to sleep" = Never**; keep
+  it plugged in; ideally disable modern-standby throttling / use a keep-awake. Long-term better option:
+  run the bot on an always-on box (cheap cloud VM / Raspberry Pi). The timing guard (6b1a94e) already
+  makes a suspended-then-resumed process safe (squares off / won't trade after close on resume).
+- Tue 07-21 data should be discarded from the go/no-go sample.
+- User must `git pull` on the laptop to get 6b1a94e + 79db49d before the next session.
+- yfinance `timeout=20` (in stocks.py) is a harmless defensive keeper even though fetch wasn't the cause.
 
 **Security note:** user has repeatedly pasted Dhan JWT access tokens into chat. They expire in 24h;
 always tell them to regenerate rather than reuse, tokens go only in git-ignored `.env`, never commit
