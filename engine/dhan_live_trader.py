@@ -1433,8 +1433,19 @@ class DhanLiveTrader:
 
             waiting_logged = False
             market_was_open = False
+            last_cycle_wall = time.time()
             try:
                 while True:
+                    # Detect a long stall between cycles. Cycles should be ~poll
+                    # interval apart; a multi-minute jump means the process was
+                    # suspended (laptop power-saving / modern standby) — which
+                    # silently skips the trading window. Surface it in the log.
+                    gap = time.time() - last_cycle_wall
+                    if gap > max(300, self.config.poll_interval_seconds * 4):
+                        print(f"  [WARN] {gap/60:.0f} min gap since last cycle — the bot was "
+                              f"paused (laptop sleep/power-saving?). Intraday needs it running "
+                              f"continuously; see power settings.")
+                    last_cycle_wall = time.time()
                     if not self._is_market_open():
                         now = self._ist_now()
                         # Market just closed after a trading session — send the
