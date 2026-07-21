@@ -96,11 +96,14 @@ User runs it on their **laptop** via double-clicking `start_paper_bot.bat` (leav
 - Added a **stall detector** (commit 79db49d): run loop prints `[WARN] N min gap since last cycle —
   bot was paused (laptop sleep/power-saving?)` when >~5 min elapse between cycles. Next session's log
   will confirm suspension definitively.
-- **FIX for the user (laptop, not code):** keep the process alive all session — Windows Settings →
-  System → Power & battery → Screen & sleep → **"When plugged in, put device to sleep" = Never**; keep
-  it plugged in; ideally disable modern-standby throttling / use a keep-awake. Long-term better option:
-  run the bot on an always-on box (cheap cloud VM / Raspberry Pi). The timing guard (6b1a94e) already
-  makes a suspended-then-resumed process safe (squares off / won't trade after close on resume).
+- **FINAL root cause = Windows Console QuickEdit Mode** (power mgmt ruled out: user confirmed laptop is
+  never-sleep + always plugged in). Clicking/selecting text in a cmd/PowerShell window PAUSES the running
+  process until a key is pressed. The freezes lined up with the user copy-pasting console logs to send —
+  each selection froze the bot for the whole time. FIX (commit 97661b1): `_disable_windows_quickedit()`
+  in cli.py (ctypes SetConsoleMode clears ENABLE_QUICK_EDIT_MODE), called at dhan-live startup — a click
+  can no longer pause the bot. Prints "[CONSOLE] QuickEdit disabled..." at startup. Also: user should
+  read `logs/paper_<date>.log` instead of selecting console text (no need to touch the window now).
+  Timing guard (6b1a94e) still makes any resume safe; stall detector (79db49d) will flag any remaining gap.
 - Tue 07-21 data should be discarded from the go/no-go sample.
 - User must `git pull` on the laptop to get 6b1a94e + 79db49d before the next session.
 - yfinance `timeout=20` (in stocks.py) is a harmless defensive keeper even though fetch wasn't the cause.
