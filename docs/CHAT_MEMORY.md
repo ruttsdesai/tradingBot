@@ -108,6 +108,28 @@ User runs it on their **laptop** via double-clicking `start_paper_bot.bat` (leav
 - User must `git pull` on the laptop to get 6b1a94e + 79db49d before the next session.
 - yfinance `timeout=20` (in stocks.py) is a harmless defensive keeper even though fetch wasn't the cause.
 
+**2026-07-22 (Wed) — FIRST FULLY CLEAN SESSION (all infra fixes confirmed in the wild):**
+- Startup showed `[CONSOLE] QuickEdit disabled`; ran continuously 09:15→15:30 with cycles every ~1 min
+  and **zero `[WARN]` gap lines** → the freeze is fixed. Square-off fired exactly at 15:10
+  (AUTO-SQUARE-OFF M&M). Logging + Telegram + consensus labels all working.
+- At open it time-exited the 2 positions stuck overnight from Tuesday's corrupted run (AXISBANK -0.98%,
+  ASIANPAINT -0.59%) ≈ -Rs227 — Tuesday carryover, not today's strategy.
+- Day result: 30 trades, realized -Rs326.95, equity Rs99,817.15 (-0.18% since inception). Ex-carryover,
+  today's own trading was ~flat-to--Rs100.
+- **Two STRUCTURAL observations (noted, NOT yet fixed — see decision below):**
+  1. **Overtrading/churn:** ~30 trades/day, overwhelmingly single-strategy `1/3 BollingerBands` flips
+     (M&M ~8 round-trips, KOTAKBANK ~6). Nets ~flat in paper but would bleed on real brokerage+spread.
+     The consensus "act unless opposed" rule permits lone-strategy entries. Candidate fix (NOT applied):
+     re-entry cooldown (no re-buy within N min of selling same stock) — kills round-trips without the
+     strict-2/3 consensus that memory says votes away the mean-reversion winners.
+  2. **Volatility filter mis-calibrated:** min_volatility_pct=0.15% blocked ~80% of the day; these
+     large-caps run ATR/close ~0.08-0.14% per 5m bar. Candidate fix (NOT applied): lower to ~0.08-0.10%
+     or drop it.
+- **DECISION (user, 2026-07-22): collect 3-5 more clean days UNCHANGED before any tuning** — keep the
+  sample pure. Do NOT modify churn/filter/consensus/config mid-experiment. After the sample, revisit the
+  two structural fixes above with more evidence. NEXT: user sends the next few days' logs / paper-status;
+  track P&L trend, trade count/day, win rate, whether churn consistently loses.
+
 **Security note:** user has repeatedly pasted Dhan JWT access tokens into chat. They expire in 24h;
 always tell them to regenerate rather than reuse, tokens go only in git-ignored `.env`, never commit
 `.env`. Paper mode needs no credentials at all.
