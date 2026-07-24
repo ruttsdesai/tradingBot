@@ -130,6 +130,29 @@ User runs it on their **laptop** via double-clicking `start_paper_bot.bat` (leav
   two structural fixes above with more evidence. NEXT: user sends the next few days' logs / paper-status;
   track P&L trend, trade count/day, win rate, whether churn consistently loses.
 
+**2026-07-24 — 4-CLEAN-DAY ANALYSIS + churn fixes applied (analysis-driven):**
+- Analyzed full ledger `state/dhan_paper_state.json` (Mon20, Wed22, Thu23, Fri24; Tue21 excluded).
+  Per-day realized: Mon +76, Wed -327, Thu -2, Fri +425. **Net +Rs171.75 (+0.17%)**, or ~+Rs400 excluding
+  the Rs229 Tuesday-freeze carryover cleanup on Wed open.
+- Stats: 57% win rate, **avg win +51 vs avg loss -68 (payoff 0.76)**, profit factor 1.09, **~34 trades/day**.
+  KEY FINDING: paper P&L is GROSS; at 34 trades/day real brokerage+STT+slippage (~Rs30-50/round-trip,
+  ~Rs2-3.4k over 4 days) would flip it NET-NEGATIVE. Overtrading is the core problem, as backtests warned.
+- Per-ticker (valid days): winners BAJFINANCE +335, ASIANPAINT +132, SUNPHARMA +122; losers AXISBANK -348
+  (worst; ~149 of it Tue carryover but still the consistent bleeder), M&M -35, KOTAKBANK -34.
+- **FIXES APPLIED (user chose to act; commit 5e00ea6):**
+  1. **Re-entry cooldown** — new config `reentry_cooldown_minutes` (default 15, in config.yaml + cli wiring).
+     After exiting a symbol, block re-buying it for 15m. `_last_exit_time` marked at ALL exit sites
+     (consensus SELL, stop-loss, take-profit, trailing, time-exit); gates the consensus BUY path via
+     `_in_reentry_cooldown()`. On historical ledger blocks ~20% of entries (~6 fewer trades/day). Tested.
+  2. **Dropped AXISBANK** from the paper basket in `start_paper_bot.bat` (now 5 tickers: ASIANPAINT,
+     BAJFINANCE, M&M, SUNPHARMA, KOTAKBANK). Removes the worst ticker (~7 more trades/day).
+  - Expected effect: ~34 trades/day → ~21/day. Volatility filter left AS-IS (it's a brake; lowering it
+    would add churn).
+- **NEXT:** user `git pull` on laptop, restart bot (basket auto-drops AXISBANK, cooldown active). Collect
+  more days and re-run this same ledger analysis; compare trades/day (should drop) and whether net-of-cost
+  turns positive. Go/no-go still pending. If still net-negative after costs, consider: stricter entries,
+  fewer/higher-quality tickers, or concluding intraday-on-these-names isn't profitable.
+
 **Security note:** user has repeatedly pasted Dhan JWT access tokens into chat. They expire in 24h;
 always tell them to regenerate rather than reuse, tokens go only in git-ignored `.env`, never commit
 `.env`. Paper mode needs no credentials at all.
