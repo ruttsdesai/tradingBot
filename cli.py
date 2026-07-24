@@ -1799,6 +1799,7 @@ def dhan_live(ticker, strategies, all_strategies, once, live_mode, paper_mode, c
         min_volatility_pct=dhan_cfg.get("min_volatility_pct", 0.005),
         stop_buying_minutes=dhan_cfg.get("stop_buying_minutes", 900),
         force_square_off_minutes=dhan_cfg.get("force_square_off_minutes", 910),
+        reentry_cooldown_minutes=dhan_cfg.get("reentry_cooldown_minutes", 15),
         use_atr_sizing=sizing_cfg.get("use_atr_sizing", False),
         position_risk_pct=sizing_cfg.get("position_risk_pct", 0.01),
         atr_period=sizing_cfg.get("atr_period", 14),

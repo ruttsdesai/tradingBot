@@ -27,7 +27,7 @@ echo     check_paper_status.bat in a second window.
 echo     A full copy of this window is being saved to: %LOGFILE%
 echo.
 
-python cli.py dhan-live --paper --capital 100000 -t AXISBANK.NS -t ASIANPAINT.NS -t BAJFINANCE.NS -t "M&M.NS" -t SUNPHARMA.NS -t KOTAKBANK.NS -s rsi_mean_revert -s bollinger_bands -s ma_crossover --log-file "%LOGFILE%"
+python cli.py dhan-live --paper --capital 100000 -t ASIANPAINT.NS -t BAJFINANCE.NS -t "M&M.NS" -t SUNPHARMA.NS -t KOTAKBANK.NS -s rsi_mean_revert -s bollinger_bands -s ma_crossover --log-file "%LOGFILE%"
 
 echo.
 echo ==== Bot stopped. Press any key to close this window. ====

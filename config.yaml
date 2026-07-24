@@ -114,6 +114,7 @@ dhan_live_trading:
   initial_capital: 1027          # Rs 1,027 actual balance (real-money live mode; --capital overrides for paper)
   max_positions: 6               # up to 6 concurrent positions (one per ticker in the paper set)
   max_allocation_pct: 0.16       # max 16% per position → 6 × 16% ≈ 96% deployed, leaves a cash buffer
+  reentry_cooldown_minutes: 15   # after exiting a symbol, wait 15m before re-buying it (curbs churn; 0 = off)
   poll_interval_seconds: 60      # seconds between evaluation cycles
   intraday: true                 # true = use intraday bars (5m/15m) for continuous all-day trading
   intraday_interval: "5m"        # candle interval for intraday: 1m, 5m, 15m, 30m, 1h

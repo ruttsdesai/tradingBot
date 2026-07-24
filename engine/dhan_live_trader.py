@@ -138,6 +138,7 @@ class DhanLiveTraderConfig:
     tg_api_id: int = 0
     tg_api_hash: str = ""
     tg_session: str = "dhan_trader"
+    reentry_cooldown_minutes: int = 15   # after exiting a symbol, wait this long before re-buying it (0 = off; curbs churn)
 
 
 # ---------------------------------------------------------------------------
@@ -191,6 +192,7 @@ class DhanLiveTrader:
         self._sl_orders: dict[str, str] = {}   # ticker (base) -> stop-loss order_id
         self._tp_orders: dict[str, str] = {}   # ticker (base) -> take-profit order_id
         self._cnc_holdings: set[str] = set()   # symbols held as CNC delivery (sell as CNC, not MIS)
+        self._last_exit_time: dict[str, datetime] = {}  # base symbol -> last exit time (re-entry cooldown)
         self._init_notifier()
 
     # ------------------------------------------------------------------
@@ -1088,6 +1090,14 @@ class DhanLiveTrader:
 
         return False
 
+    def _in_reentry_cooldown(self, base: str) -> bool:
+        """True if `base` was exited less than reentry_cooldown_minutes ago."""
+        cd = self.config.reentry_cooldown_minutes
+        last = self._last_exit_time.get(base)
+        if cd <= 0 or last is None:
+            return False
+        return (datetime.now() - last).total_seconds() / 60.0 < cd
+
     def run_once(self, tickers: list[str]) -> dict:
         """Execute one evaluation cycle.
 
@@ -1208,6 +1218,12 @@ class DhanLiveTrader:
                 # Volatility filter: skip if market is dead (checked once per ticker)
                 elif low_vol:
                     pass
+                # Re-entry cooldown: don't immediately re-buy a symbol we just
+                # exited (curbs the buy/sell/re-buy churn that bleeds on costs).
+                elif self._in_reentry_cooldown(base):
+                    mins = (datetime.now() - self._last_exit_time[base]).total_seconds() / 60.0
+                    print(f"  [DHAN] BUY skipped for {ticker}: re-entry cooldown "
+                          f"({mins:.0f}m < {self.config.reentry_cooldown_minutes}m since exit)")
                 else:
                     # Size the position
                     max_value = portfolio.total_value * self.risk_manager.max_allocation_pct
@@ -1274,6 +1290,7 @@ class DhanLiveTrader:
                         # total_value invariant across the fill)
                         portfolio.current_cash += order["qty"] * (exit_price or price)
                         del portfolio.positions[base]
+                        self._last_exit_time[base] = datetime.now()
 
             # Check stop-loss / take-profit
             if base in portfolio.positions:
@@ -1286,6 +1303,7 @@ class DhanLiveTrader:
                         print(f"  [DHAN] STOP-LOSS {ticker}: {risk.reason}")
                         portfolio.current_cash += order["qty"] * (order.get("filled_avg_price") or price)
                         del portfolio.positions[base]
+                        self._last_exit_time[base] = datetime.now()
                         self._notify(
                             format_sl_msg(ticker, risk.reason, self.strategy.name)
                         )
@@ -1297,6 +1315,7 @@ class DhanLiveTrader:
                         print(f"  [DHAN] TAKE-PROFIT {ticker}: {risk.reason}")
                         portfolio.current_cash += order["qty"] * (order.get("filled_avg_price") or price)
                         del portfolio.positions[base]
+                        self._last_exit_time[base] = datetime.now()
                         self._notify(
                             format_tp_msg(ticker, risk.reason, self.strategy.name)
                         )
@@ -1308,6 +1327,7 @@ class DhanLiveTrader:
                         print(f"  [DHAN] TRAILING-STOP {ticker}: {risk.reason}")
                         portfolio.current_cash += order["qty"] * (order.get("filled_avg_price") or price)
                         del portfolio.positions[base]
+                        self._last_exit_time[base] = datetime.now()
                         self._notify(
                             format_sell_msg(
                                 ticker, order["qty"], order.get("filled_avg_price"),
@@ -1334,6 +1354,7 @@ class DhanLiveTrader:
                                   f"P&L {pnl_pct:+.2%} < {self.config.min_profit_threshold_pct:.1%} threshold")
                             portfolio.current_cash += order["qty"] * (order.get("filled_avg_price") or price)
                             del portfolio.positions[base]
+                            self._last_exit_time[base] = datetime.now()
                             self._notify(
                                 format_sell_msg(
                                     ticker, order["qty"], order.get("filled_avg_price"),
