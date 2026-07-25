@@ -33,6 +33,13 @@ _DEFAULT_STATE_FILE = os.path.join(
 class DhanPaperTrader(DhanLiveTrader):
     """Forward paper-trading engine: live data, virtual fills, zero orders."""
 
+    # Per-side cost applied to every simulated fill: brokerage + STT +
+    # exchange txn + GST + stamp duty, plus a little slippage. ~0.05%/side
+    # is a realistic Dhan intraday figure, i.e. ~0.1% round trip. Without
+    # this, paper P&L is GROSS and flatters a high-frequency strategy —
+    # which is exactly how the churn problem stayed hidden for days.
+    COST_PCT_PER_SIDE = 0.0005
+
     def __init__(self, *args, state_file: str = "", **kwargs):
         super().__init__(*args, **kwargs)
         self._mode_label = "PAPER"
@@ -128,24 +135,28 @@ class DhanPaperTrader(DhanLiveTrader):
         qty = int(quantity)
         if qty <= 0:
             return None
-        cost = qty * price
+        # Charge realistic costs so paper P&L is NET, not gross.
+        unit_cost = price * (1.0 + self.COST_PCT_PER_SIDE)
+        cost = qty * unit_cost
         if cost > self._paper_cash:
-            qty = int(self._paper_cash // price)
+            qty = int(self._paper_cash // unit_cost)
             if qty <= 0:
                 print(f"  [PAPER] BUY skipped for {ticker}: Rs {price:,.2f}/share exceeds "
                       f"cash Rs {self._paper_cash:,.2f}")
                 return None
-            cost = qty * price
+            cost = qty * unit_cost
 
         self._paper_cash -= cost
+        # Store the cost-inclusive unit price as the basis, so a later sell's
+        # P&L is a true NET round-trip number (both sides' costs included).
         pos = self._paper_positions.get(base)
         if pos:
             total = pos["qty"] + qty
-            pos["avg"] = (pos["avg"] * pos["qty"] + price * qty) / total
+            pos["avg"] = (pos["avg"] * pos["qty"] + unit_cost * qty) / total
             pos["qty"] = total
         else:
             self._paper_positions[base] = {
-                "qty": qty, "avg": price,
+                "qty": qty, "avg": unit_cost,
                 "entry": datetime.now().isoformat(timespec="seconds"),
             }
         self._trades.append({
@@ -169,8 +180,10 @@ class DhanPaperTrader(DhanLiveTrader):
         if qty <= 0:
             return None
 
-        proceeds = qty * price
-        pnl = (price - pos["avg"]) * qty
+        # Net of costs on the way out too; pos["avg"] already carries the
+        # entry-side cost, so pnl here is a true net round-trip figure.
+        proceeds = qty * price * (1.0 - self.COST_PCT_PER_SIDE)
+        pnl = proceeds - (pos["avg"] * qty)
         self._paper_cash += proceeds
         pos["qty"] -= qty
         if pos["qty"] <= 0:

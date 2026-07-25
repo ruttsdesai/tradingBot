@@ -53,3 +53,7 @@ data/real5m/
 
 # Session log files (bot console output)
 logs/
+
+# Lab cached bars + experiment outputs
+data/lab_cache/
+lab/results/
