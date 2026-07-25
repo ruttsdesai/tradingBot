@@ -365,7 +365,11 @@ class PaperTrader:
         if pos is None or pos.quantity <= 0:
             return
 
-        trade = portfolio.sell(ticker, pos.quantity, price, date, reason)
+        # Charge commission on the exit too. _handle_buy already loads the
+        # entry side; without this the simulator only ever paid half the
+        # round-trip cost, flattering high-turnover strategies.
+        net_price = price * (1.0 - self.commission_pct)
+        trade = portfolio.sell(ticker, pos.quantity, net_price, date, reason)
         if trade:
             if hasattr(self.strategy, "clear_entry"):
                 self.strategy.clear_entry()

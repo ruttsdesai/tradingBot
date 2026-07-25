@@ -153,6 +153,34 @@ User runs it on their **laptop** via double-clicking `start_paper_bot.bat` (leav
   turns positive. Go/no-go still pending. If still net-negative after costs, consider: stricter entries,
   fewer/higher-quality tickers, or concluding intraday-on-these-names isn't profitable.
 
+**2026-07-25 — STRATEGY LAB built (user's idea: sandbox first, promote after) + paper now NET of costs:**
+- **`lab/run_experiment.py`** (commit b797e72): replays cached 5m bars through the existing
+  `IntradayBacktester` across a declarative `VARIANTS` dict, prints a sorted NET-OF-COST comparison vs
+  `baseline` (current live settings). Caches bars to `data/lab_cache/`, writes detail to `lab/results/`
+  (both gitignored). CLI: `--days --cost-pct --variants --tickers --refresh --list`.
+  **The lab never writes config.yaml or start_paper_bot.bat — promotion is manual/deliberate.**
+  `lab/README.md` documents the LAB → PAPER → LIVE pipeline + promote checklist + overfitting guardrails.
+- **KNOWN LIMITATION (documented):** the lab runs ONE strategy per ticker; the live bot uses a CONSENSUS
+  vote across 3. So the lab RANKS options / finds levels, it does NOT predict live P&L. Paper remains the
+  final gate.
+- **`DhanPaperTrader` now charges costs**: `COST_PCT_PER_SIDE = 0.0005` (~0.1% round trip) on every
+  simulated fill, and stores a cost-inclusive basis so reported pnl is a true NET round-trip figure.
+  Verified: buy+sell at the SAME price now books -Rs99 on Rs100k notional (previously +0.00 — this is
+  exactly how the churn problem stayed hidden). **NOTE: past ledger P&L is gross; new days are net, so
+  don't compare old vs new days naively.**
+- **First lab run (55d, 5 tickers x 3 strategies = 15 combos, 0.05%/side):**
+  trail_0.8 +2.07% | trail_0.5 +1.80% | stop_1.5pct +1.72% | **baseline +1.70%** | hold_60m +1.59% |
+  trail_0.3 +1.52% | trail0.5_hold60 +1.48% | trail_atr1.5 +1.33%.
+  - Trailing stop helps but **margin is small (+0.37pp)** — treat as possible noise, not a discovery.
+  - **Tight trail (0.3%) HURTS** → confirms user's instinct that tightening stops causes whipsaw on these
+    small moves. Also `stop_1.5pct` ≈ baseline, confirming the hard stop is essentially inert.
+  - **BIG INSIGHT:** backtest combos trade ~57-65 times over 55 days (**~1 trade/day**) and are NET
+    POSITIVE. The live bot does **~34 trades/day**. The single-strategy backtest is profitable *because*
+    it trades rarely — strongly implies the live consensus "act unless opposed" rule (which fires on lone
+    1/3 signals) is what destroys the edge via costs. Reducing trade frequency likely matters far more
+    than any trailing-stop tuning.
+- Cost stress test at 0.001/side was run to check robustness (see lab/results/).
+
 **Security note:** user has repeatedly pasted Dhan JWT access tokens into chat. They expire in 24h;
 always tell them to regenerate rather than reuse, tokens go only in git-ignored `.env`, never commit
 `.env`. Paper mode needs no credentials at all.
