@@ -179,7 +179,32 @@ User runs it on their **laptop** via double-clicking `start_paper_bot.bat` (leav
     it trades rarely — strongly implies the live consensus "act unless opposed" rule (which fires on lone
     1/3 signals) is what destroys the edge via costs. Reducing trade frequency likely matters far more
     than any trailing-stop tuning.
-- Cost stress test at 0.001/side was run to check robustness (see lab/results/).
+- **BUG FOUND BY THE LAB (commit after b797e72): `PaperTrader._handle_sell` charged NO commission** —
+  it passed the raw price to `portfolio.sell()`, so every simulated EXIT was free and the simulator only
+  ever paid the entry half of the round trip. **This affected EVERY backtest in the repo** (runner.py,
+  intraday_runner.py, walk_forward.py all inherit it) and systematically flattered high-turnover
+  strategies. Caught because a `--cost-pct 0.001` stress run returned results *identical* to 0.0005
+  (impossible if costs were fully charged). Fixed: exits fill at `price * (1 - commission_pct)`.
+  Unit-tested (10 shares @100 with 1% commission -> 990.00). **All pre-fix backtest numbers in this
+  memory file — including the older 20-year and 57-day studies — are OPTIMISTIC and should be re-run.**
+- **CORRECTED lab run (55d, 15 combos, 0.05%/side, full round trip):**
+  trail_0.8 **+0.71%** | stop_1.5pct +0.45% | **baseline +0.44%** | trail_0.5 +0.16% | trail_0.3 -0.08% |
+  hold_60m -0.10% | trail0.5_hold60 -0.11% | trail_atr1.5 -0.22%.
+  Sharpe: best 0.50, baseline 0.37. Only 53-60% of combos profitable.
+  - Charging the full round trip cut returns **~60-75%** vs the buggy half-cost run (baseline
+    +1.70% -> +0.44%). **Costs are the dominant term, not strategy tuning.**
+  - baseline +0.44% over 55 trading days ≈ **~2%/yr annualized**; best variant ≈ ~3.3%/yr — both BELOW
+    an Indian FD (~7%) while carrying full equity risk. Half the variants are outright negative.
+  - trail_0.8 still ranks first (+0.27pp over baseline) but that is small vs the noise in a 55-day,
+    15-combo sample — NOT a discovery.
+- **CONVERGING EVIDENCE (two independent sources now agree):** live paper (4 clean days, ~breakeven
+  GROSS at ~34 trades/day => net-negative) and the corrected lab (~2%/yr net at ~1 trade/day) both say
+  **intraday scalping these liquid large-caps does not clear costs.** The earlier "backtest combos are
+  profitable" read was an artifact of the half-cost bug.
+- **RECOMMENDED PIVOT (not yet decided by user):** stop tuning intraday params; test the SWING/daily-bar
+  approach in the lab instead (far fewer trades => costs become negligible; earlier studies favored daily
+  bars for these names). Alternative: higher-volatility instruments so moves clear costs. Do NOT promote
+  trail_0.8 on this evidence alone.
 
 **Security note:** user has repeatedly pasted Dhan JWT access tokens into chat. They expire in 24h;
 always tell them to regenerate rather than reuse, tokens go only in git-ignored `.env`, never commit
