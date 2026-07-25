@@ -240,8 +240,11 @@ def main():
     print(f"  Beat buy & hold          : {len(beat)}/{len(rows)} "
           f"({len(beat)/len(rows)*100:.0f}%)")
     print(f"  Avg excess CAGR vs B&H   : {avg_excess:+.2f}%/yr")
-    print(f"  Avg trades per combo     : {avg_trades:.0f} over {args.years}y "
-          f"(~{avg_trades/args.years:.0f}/yr)")
+    # Use the ACTUAL window length, not --years: with --start/--end the fetched
+    # history is sliced, so --years would badly misreport the trade rate.
+    window_years = max(max(len(df) for df in data.values()) / TRADING_DAYS_PER_YEAR, 1e-9)
+    print(f"  Avg trades per combo     : {avg_trades:.0f} over {window_years:.1f}y "
+          f"(~{avg_trades/window_years:.0f}/yr)")
     print(f"  Best combo               : {best['ticker']}/{best['strategy']} "
           f"{best['cagr']:+.1f}%/yr vs B&H {best['bh_cagr']:+.1f}%/yr "
           f"({best['excess_cagr']:+.1f}pp)")
