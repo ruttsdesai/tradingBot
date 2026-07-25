@@ -227,6 +227,37 @@ User runs it on their **laptop** via double-clicking `start_paper_bot.bat` (leav
   bear/sideways window (the fair test for stop-based strategies), (c) different instruments/markets.
   The ENGINEERING (bot, lab, cost model, guardrails) is sound and reusable regardless.
 
+**2026-07-25 — REGIME TEST (user chose option b). THE CONCLUSIVE FINDING:**
+Added `--start/--end/--label` to `run_swing.py` (caches one long history per ticker, slices it).
+Also fixed a self-inflicted display bug: trade rate divided by `--years` (fetch span) instead of the
+actual sliced window, so a 2y window reported ~2/yr instead of ~9/yr.
+
+Three windows, same 5 tickers x 5 strategies, costs charged both sides:
+
+| Window | Basket B&H | Avg excess vs B&H | Beat rate |
+|---|---|---|---|
+| 5y to 2026 (BULL) | +13.6%/yr | **-11.12%/yr** | 4/25 (16%) |
+| 2015-01..2016-12 (sideways, basket still +11.7%) | +11.7%/yr | **-11.02%/yr** | 7/25 (28%) |
+| 2018-01..2020-03 (BEAR, to COVID bottom) | **-3.4%/yr** | **-0.12%/yr** | 11/25 (44%) |
+
+- **The strategies are INSURANCE, not alpha.** They cost ~11pp/yr in rising markets and roughly
+  BREAK EVEN in falling ones. Over a full cycle (equities rise long-term) that nets to a loss.
+- **STRATEGY RANKING INVERTS BY REGIME** — this is the key mechanic:
+  - BULL: rsi_mean_revert best (+4.8%), ma_crossover worst (-0.3%)
+  - BEAR: ma_crossover best (+1.8%, **+5.3pp**), macd +4.4pp, momentum +2.6pp;
+    **rsi_mean_revert WORST (-12.0%, -8.6pp)**, bollinger -4.3pp
+  - i.e. trend-followers win when markets fall; mean-reversion wins when they rise.
+- **Capital protection is real when it matters:** every bull/sideways combo that beat B&H was on a
+  stock that FELL (SUNPHARMA B&H -12.7%/yr -> rsi +9.3%/yr = +22pp; M&M B&H -2.2% -> rsi +14.4% =
+  +16.5pp). Bear window best: **M&M/macd -3.4%/yr vs B&H -36.7%/yr = +33.3pp saved.**
+- **DIRECT IMPLICATION FOR THE LIVE BOT:** it runs RSI_MeanReversion + BollingerBands + MA_Crossover.
+  In the bear test RSI and Bollinger were the two WORST (-8.6pp, -4.3pp). So the live config is
+  weighted toward the strategies that fail in downturns, AND it runs them intraday where costs
+  dominate. Worst of both.
+- **BOTTOM LINE:** buy & hold / index beats this system over a full cycle. Profiting from it requires
+  RELIABLE REGIME DETECTION (switch to trend-following in downturns, hold otherwise) — which is an
+  unsolved problem, not a tuning task. Do not put real money on the current setup.
+
 **Security note:** user has repeatedly pasted Dhan JWT access tokens into chat. They expire in 24h;
 always tell them to regenerate rather than reuse, tokens go only in git-ignored `.env`, never commit
 `.env`. Paper mode needs no credentials at all.
