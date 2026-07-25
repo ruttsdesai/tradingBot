@@ -206,6 +206,27 @@ User runs it on their **laptop** via double-clicking `start_paper_bot.bat` (leav
   bars for these names). Alternative: higher-volatility instruments so moves clear costs. Do NOT promote
   trail_0.8 on this evidence alone.
 
+**2026-07-25 — SWING LAB (`lab/run_swing.py`) — THE DECISIVE RESULT:**
+- Daily bars, 5y, 5 tickers x 5 strategies = 25 combos, 0.1%/side charged BOTH sides, and — for the
+  first time — **benchmarked against BUY & HOLD** on the same ticker/window as annualized excess CAGR.
+- **Buy & hold CAGR (5y): M&M +34.2%, SUNPHARMA +23.5%, BAJFINANCE +10.4%, KOTAKBANK +2.6%,
+  ASIANPAINT -2.8%. Basket average +13.6%/yr.**
+- **Strategy CAGR vs B&H (avg across tickers):** rsi_mean_revert +4.8% (-8.8pp), macd +4.7% (-8.9pp),
+  bollinger_bands +2.3% (-11.3pp), momentum_breakout +0.9% (-12.7pp), ma_crossover -0.3% (-13.9pp).
+- **VERDICT: only 4/25 combos (16%) beat buy & hold; average excess -11.12%/yr.** ~10 trades/yr, so
+  costs are NOT the explanation here — the strategies simply exit winning trends (they turned M&M's
+  +34%/yr and SUNPHARMA's +23.5%/yr into ~4%). Best combo KOTAKBANK/rsi +9.0%/yr vs its B&H +2.6%/yr,
+  and that only "wins" because KOTAKBANK itself was a poor holding.
+- **BOTH REGIMES NOW FAIL:** intraday ~2%/yr net (below a risk-free FD); swing +4.8%/yr best vs +13.6%
+  just holding. The core premise — that these strategies add value on these names — is NOT supported.
+- **HONEST CAVEAT:** the 5y window is a strong Indian equity bull market, which structurally favors
+  buy & hold; strategies with stops are designed to shine in bear/sideways regimes. A fair follow-up is
+  to re-run over a bear/sideways window (e.g. 2015-2016, or 2020 crash) to see whether they protect
+  capital. No evidence either way yet. Sample is also only 5 tickers and includes a huge M&M run.
+- **STATUS: awaiting user decision.** Options: (a) accept it and just hold/index, (b) test a
+  bear/sideways window (the fair test for stop-based strategies), (c) different instruments/markets.
+  The ENGINEERING (bot, lab, cost model, guardrails) is sound and reusable regardless.
+
 **Security note:** user has repeatedly pasted Dhan JWT access tokens into chat. They expire in 24h;
 always tell them to regenerate rather than reuse, tokens go only in git-ignored `.env`, never commit
 `.env`. Paper mode needs no credentials at all.
