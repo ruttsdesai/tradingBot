@@ -70,8 +70,14 @@ def _build_strategy(name: str):
     raise ValueError(f"Unknown strategy: {name}")
 
 
-def load_daily(ticker: str, years: int, refresh: bool = False):
-    """Fetch daily bars, cached to CSV."""
+def load_daily(ticker: str, years: int, refresh: bool = False,
+               start: str = "", end: str = ""):
+    """Fetch daily bars (cached), optionally sliced to a [start, end] window.
+
+    fetch_stock_data always pulls a window ending today, so to test a
+    historical regime (e.g. a bear market) we cache one long history per
+    ticker and slice it — no repeated downloads per window.
+    """
     import pandas as pd
 
     os.makedirs(CACHE_DIR, exist_ok=True)
@@ -79,13 +85,25 @@ def load_daily(ticker: str, years: int, refresh: bool = False):
     path = os.path.join(CACHE_DIR, f"{safe}_1d_{years}y.csv")
     if os.path.exists(path) and not refresh:
         df = pd.read_csv(path, index_col=0, parse_dates=True)
-        if not df.empty:
-            return df
+    else:
+        from data.stocks import fetch_stock_data
+        df = fetch_stock_data(ticker, years=years)
+        if df is not None and not df.empty:
+            df.to_csv(path)
 
-    from data.stocks import fetch_stock_data
-    df = fetch_stock_data(ticker, years=years)
-    if df is not None and not df.empty:
-        df.to_csv(path)
+    if df is None or df.empty:
+        return df
+
+    if start or end:
+        idx = df.index
+        if getattr(idx, "tz", None) is not None:
+            idx = idx.tz_localize(None)
+            df = df.copy()
+            df.index = idx
+        if start:
+            df = df[df.index >= pd.Timestamp(start)]
+        if end:
+            df = df[df.index <= pd.Timestamp(end)]
     return df
 
 
@@ -99,11 +117,15 @@ def annualize(total_return: float, n_bars: int) -> float:
 
 def main():
     ap = argparse.ArgumentParser(description="Swing Lab — daily bars vs buy & hold")
-    ap.add_argument("--years", type=int, default=5)
+    ap.add_argument("--years", type=int, default=5,
+                    help="History to fetch/cache (also the window when no --start/--end)")
     ap.add_argument("--cost-pct", type=float, default=DEFAULT_COST_PCT)
     ap.add_argument("--tickers", default="")
     ap.add_argument("--strategies", default="")
     ap.add_argument("--refresh", action="store_true")
+    ap.add_argument("--start", default="", help="Window start YYYY-MM-DD (e.g. a bear market)")
+    ap.add_argument("--end", default="", help="Window end YYYY-MM-DD")
+    ap.add_argument("--label", default="", help="Name for this window in the output/results file")
     args = ap.parse_args()
 
     tickers = [t.strip() for t in args.tickers.split(",") if t.strip()] or BASKET
@@ -114,7 +136,11 @@ def main():
     print("=" * 86)
     print(f"  Tickers   : {', '.join(tickers)}")
     print(f"  Strategies: {', '.join(strategies)}")
-    print(f"  Window    : {args.years} years of daily bars")
+    if args.start or args.end:
+        print(f"  Window    : {args.start or 'earliest'} -> {args.end or 'latest'}"
+              f"{'  [' + args.label + ']' if args.label else ''}")
+    else:
+        print(f"  Window    : {args.years} years of daily bars")
     print(f"  Cost/side : {args.cost_pct:.3%} (charged on BOTH sides)")
     print("=" * 86)
 
@@ -122,7 +148,8 @@ def main():
     data, bh = {}, {}
     for t in tickers:
         try:
-            df = load_daily(t, args.years, refresh=args.refresh)
+            df = load_daily(t, args.years, refresh=args.refresh,
+                            start=args.start, end=args.end)
             if df is None or df.empty:
                 print(f"  {t:16} no data")
                 continue
