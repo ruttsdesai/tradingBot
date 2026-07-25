@@ -258,6 +258,37 @@ Three windows, same 5 tickers x 5 strategies, costs charged both sides:
   RELIABLE REGIME DETECTION (switch to trend-following in downturns, hold otherwise) — which is an
   unsolved problem, not a tuning task. Do not put real money on the current setup.
 
+**2026-07-25 — REGIME DETECTION TESTED (`lab/run_regime.py`). INVESTIGATION CLOSED:**
+Tested the most-studied regime rule (Faber timing: long while close > SMA, else cash) over a full
+12-year cycle, 5 tickers, cost charged on every switch. Deliberately used the classic rule — if a
+bespoke variant beat it, that would signal overfitting, not discovery.
+
+| variant | CAGR | vs B&H | maxDD | ret/DD | sharpe | %inMkt | switches |
+|---|---|---|---|---|---|---|---|
+| **buy_hold** | **+17.3%** | — | -56.9% | **0.32** | **0.66** | 100% | 0 |
+| faber_200 | +7.8% | -9.5pp | -52.3% | 0.16 | 0.40 | 69% | 101 |
+| faber_100 | +9.2% | -8.1pp | -48.2% | 0.25 | 0.45 | 65% | 144 |
+| faber_50 | +10.0% | -7.3pp | -44.0% | 0.31 | 0.49 | 60% | 204 |
+
+- **Timing bought RISK REDUCTION, not return.** Best rule gave up 7.3pp/yr of CAGR to remove 12.9pp of
+  drawdown. **Return/drawdown is a wash (0.31 vs 0.32) and Sharpe is WORSE (0.49 vs 0.66).** No free
+  lunch — exactly what the academic literature says.
+- **CONCLUSION ACROSS THE WHOLE INVESTIGATION — no edge found anywhere:**
+  1. Intraday 5m: ~2%/yr net after costs (below a risk-free FD)
+  2. Swing, bull window: -11.1pp/yr vs buy & hold
+  3. Swing, sideways window: -11.0pp/yr
+  4. Swing, bear window: -0.1pp (insurance works, but only breaks even)
+  5. Regime timing, full cycle: -7.3pp return for -12.9pp drawdown => risk-adjusted wash
+- **FINAL RECOMMENDATION: do not deploy real money on this system.** Buy & hold (ideally an index
+  rather than 5 individual stocks) beat every variant tested on a risk-adjusted basis.
+- **CAVEATS (honest):** only 5 individual large-caps (very volatile, ~-57% drawdowns); an index would
+  behave differently and is the more standard timing test. Strategy params were library defaults, not
+  optimized — but optimizing on this sample would be overfitting, not evidence.
+- **WHAT IS STILL VALUABLE:** the engineering (bot, paper trader, lab, honest cost model, regime
+  tooling, guardrails) is sound and reusable for any future idea; and the process caught 2 real bugs
+  (free exits in the backtester, gross-only paper P&L) that would otherwise have justified deploying
+  capital on numbers that were never real.
+
 **Security note:** user has repeatedly pasted Dhan JWT access tokens into chat. They expire in 24h;
 always tell them to regenerate rather than reuse, tokens go only in git-ignored `.env`, never commit
 `.env`. Paper mode needs no credentials at all.
