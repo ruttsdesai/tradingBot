@@ -289,6 +289,50 @@ bespoke variant beat it, that would signal overfitting, not discovery.
   (free exits in the backtester, gross-only paper P&L) that would otherwise have justified deploying
   capital on numbers that were never real.
 
+**2026-07-26 — LONG/SHORT REGIME SWITCHING + SIGNAL PREDICTIVE-POWER TEST. ROOT CAUSE FOUND:**
+
+*(1) User's proposed architecture (master strategy: bull sub-strategy + bear sub-strategy, with
+shorting) was implemented in `lab/run_regime.py` as long/short variants (short instead of cash below
+the MA). Cost now charged proportional to |position change| so a long->short flip costs 2x an exit.*
+
+| variant | CAGR | vs B&H | maxDD | sharpe |
+|---|---|---|---|---|
+| buy_hold | +17.3% | — | -56.9% | 0.66 |
+| faber_200 (long/cash) | +7.8% | -9.5pp | -52.3% | 0.40 |
+| **longshort_200 (long/short)** | **-4.1%** | **-21.5pp** | **-79.5%** | **-0.04** |
+| longshort_100 | -2.4% | -19.7pp | -74.4% | -0.01 |
+| longshort_50 | -1.0% | -18.4pp | -68.5% | 0.05 |
+
+**Shorting made everything materially WORSE.** It does not create edge, it multiplies the signal's
+edge — and the signal has none. Cash is a free option (wrong in cash = opportunity cost; wrong short
+= real loss), and shorting also fights equities' long-term upward drift.
+
+*(2) `lab/run_signals.py` (NEW) tests signals DIRECTLY — do forward returns differ when signal is ON
+vs OFF? This separates signal quality from execution/costs/sizing. Overlapping forward windows are
+handled by deflating effective N by the horizon (conservative). Bar: |t|>=2 AND consistent on >=80%
+of tickers.*
+
+**RESULT — 9 signals x 5 tickers x horizons 5/20/60 days: NOT ONE cleared the bar.** Best |t| was
+1.36 (noise). Signals tested: trend_above_sma200/50, sma200_rising, golden_cross_50_200,
+low_volatility, near_highs, momentum_12_1, below_sma10_dip, volume_above_avg.
+
+**THE ROOT CAUSE, AND IT EXPLAINS EVERYTHING:** every trend signal showed a **NEGATIVE** spread at
+*every* horizon — forward returns were *worse* when the trend said "bull" (e.g. 20d:
+golden_cross -1.78%, trend_above_sma200 -1.63%; 60d: trend_above_sma200 -4.88%). Not statistically
+significant, so the honest reading is "no predictive power", possibly mild mean reversion — but
+certainly NOT the positive trend persistence that trend-following assumes. This is exactly why
+(a) Faber timing underperformed (it held you invested during slightly *worse* periods) and
+(b) long/short was catastrophic (long in worse periods, short in better ones, leveraged).
+The only positive-spread signals were `below_sma10_dip` (buy the dip) and volume — both t<0.5, noise.
+
+**PRACTICAL BLOCKER for the user's swing long/short plan:** Indian equity shorts are INTRADAY ONLY
+(MIS, square off same day). Overnight shorts require stock futures — lot sizes typically Rs 5-10 lakh
+notional, far beyond Rs 1,00,000 capital. So the swing version is not implementable at this capital
+level regardless of performance.
+
+**CAVEATS:** 5 individual large-caps (not an index — trend following historically works better on
+indices/futures); 12y, one market; all signals are price-based from free data.
+
 **Security note:** user has repeatedly pasted Dhan JWT access tokens into chat. They expire in 24h;
 always tell them to regenerate rather than reuse, tokens go only in git-ignored `.env`, never commit
 `.env`. Paper mode needs no credentials at all.
