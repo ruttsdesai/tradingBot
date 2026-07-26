@@ -69,20 +69,26 @@ def _metrics(equity: np.ndarray, n_bars: int) -> dict:
             "sharpe": sharpe, "ret_dd": ret_dd}
 
 
-def simulate_timing(close: np.ndarray, invested: np.ndarray, cost_pct: float):
-    """Equity curve for a rule that is either fully long or fully in cash.
+def simulate_timing(close: np.ndarray, position: np.ndarray, cost_pct: float):
+    """Equity curve for a rule holding `position[i]` over bar i -> i+1.
 
-    `invested[i]` is the position to hold over bar i -> i+1. A cost is charged
-    on every change of position (entering or leaving the market).
+    position: +1 long, 0 cash, -1 short. Cost is charged in proportion to the
+    SIZE of the position change, so a long->short flip costs twice a
+    long->cash exit (it closes one trade and opens another).
     """
+    position = np.asarray(position, dtype=float)
     equity = np.ones(len(close))
     switches = 0
     for i in range(1, len(close)):
         r = close[i] / close[i - 1] - 1.0
-        equity[i] = equity[i - 1] * (1.0 + r) if invested[i - 1] else equity[i - 1]
-        if invested[i] != invested[i - 1]:
-            equity[i] *= (1.0 - cost_pct)
+        equity[i] = equity[i - 1] * (1.0 + position[i - 1] * r)
+        delta = abs(position[i] - position[i - 1])
+        if delta > 0:
+            equity[i] *= (1.0 - cost_pct * delta)
             switches += 1
+        if equity[i] <= 0:            # a short can in principle wipe out
+            equity[i:] = 1e-9
+            break
     return equity, switches
 
 
@@ -108,11 +114,24 @@ def run_ticker(df, cost_pct: float) -> dict:
         if n <= win:
             continue
         ma = sma(close, win)
-        inv = np.nan_to_num(close > ma, nan=False).astype(bool)
-        inv[:win] = True          # no signal yet -> stay invested (neutral start)
-        eq, sw = simulate_timing(close, inv, cost_pct)
+        above = np.nan_to_num(close > ma, nan=False).astype(bool)
+
+        # Long / cash (the classic timing rule)
+        pos = above.astype(float)
+        pos[:win] = 1.0           # no signal yet -> stay invested (neutral start)
+        eq, sw = simulate_timing(close, pos, cost_pct)
         out[label] = {**_metrics(eq, n), "switches": sw,
-                      "time_in_mkt": float(inv.mean() * 100)}
+                      "time_in_mkt": float((pos != 0).mean() * 100)}
+
+        # Long / SHORT — same signal, but sell short instead of sitting in cash.
+        # This is the user's proposed architecture: one sub-strategy per regime.
+        ls = np.where(above, 1.0, -1.0)
+        ls[:win] = 1.0
+        eq2, sw2 = simulate_timing(close, ls, cost_pct)
+        out[label.replace("faber", "longshort")] = {
+            **_metrics(eq2, n), "switches": sw2,
+            "time_in_mkt": 100.0,
+        }
 
     return out
 
@@ -155,7 +174,9 @@ def main():
         print("\nNo data — aborting.")
         return
 
-    variants = ["buy_hold", "faber_200", "faber_100", "faber_50"]
+    variants = ["buy_hold",
+                "faber_200", "faber_100", "faber_50",
+                "longshort_200", "longshort_100", "longshort_50"]
     agg = {}
     for v in variants:
         vals = [m[v] for m in per_ticker.values() if v in m]
