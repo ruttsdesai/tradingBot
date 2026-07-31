@@ -333,6 +333,32 @@ level regardless of performance.
 **CAVEATS:** 5 individual large-caps (not an index — trend following historically works better on
 indices/futures); 12y, one market; all signals are price-based from free data.
 
+**2026-07-30 — 11 SESSION LOGS ANALYZED (07-20 .. 07-30). POST-FIX LIVE DATA:**
+- **User DID pull all fixes.** Logs from 07-27 onward show AXISBANK dropped (5 tickers), the
+  `[CONSOLE] QuickEdit disabled` line, and `re-entry cooldown` skips firing (4 events over 07-29/30).
+- **Costs ARE being charged now** — verified by reconstructing gross P&L from log fill prices and
+  comparing to the reported `realized`: 07-27 gross +307.30 vs net +183.81; 07-29 +388.55 vs +127.51;
+  07-30 +464.50 vs +215.17. Implied ~Rs17/round-trip on ~Rs16k positions ≈ 0.1% round trip. Matches
+  the COST_PCT_PER_SIDE model. Pre-fix days show no such gap.
+- **Post-fix results (3 real trading days, NET of costs): 07-27 +183.81, 07-29 +127.51,
+  07-30 +215.17 = +Rs526.49 (+0.53%). Equity 100,000 -> 100,765.89 over the whole test.**
+- **07-28 was a DATA-OUTAGE day**, not a trading day: yfinance returned nothing for all 5 tickers all
+  session (376 cycles, "Failed to fetch ... after 3 retries" / "No data ... skipping"), so the bot
+  correctly did nothing. Good failure behavior; EXCLUDE from stats.
+- **THE DECISIVE NUMBER — cost hurdle:** avg cost Rs 211/day => **~Rs 52,800/yr = ~53% of capital per
+  year in costs at this trade frequency.** The strategy must gross >53%/yr just to break even. This is
+  the quantified, live-data version of why the 55-day intraday lab showed ~2%/yr net.
+- **DO NOT OVER-READ THE 3 GOOD DAYS.** Prior 4-day sample had daily net of +76, -327, -2, +425
+  (stdev ~Rs309). Three consecutive positive days occurs ~12.5% of the time by chance alone with zero
+  edge. This is encouraging mechanics, NOT evidence of profitability.
+- **Churn only partly fixed:** trades/day 16 (07-27) -> 26 (07-29) -> 34 (07-30), i.e. creeping back to
+  pre-fix levels (30-38). The cooldown fired only 2-4x/day, so it is not biting hard enough to cut
+  frequency materially. That directly drives the 53%/yr cost hurdle above.
+- **STATUS:** mechanics are now correct and honest (costs charged, no freezes, square-off working,
+  graceful data-outage handling). The economics remain the problem, and are now quantified from live
+  data rather than backtest. Need many more days before any profitability claim; the strong prior from
+  55d intraday + 12y swing + signal tests is still "no edge".
+
 **Security note:** user has repeatedly pasted Dhan JWT access tokens into chat. They expire in 24h;
 always tell them to regenerate rather than reuse, tokens go only in git-ignored `.env`, never commit
 `.env`. Paper mode needs no credentials at all.
