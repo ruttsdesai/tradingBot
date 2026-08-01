@@ -46,6 +46,7 @@ class IntradayBacktester(PaperTrader):
         max_hold_minutes: int = 120,
         min_profit_threshold_pct: float = 0.005,
         min_volatility_pct: float = 0.005,
+        disable_strategy_sells: bool = False,
         **kwargs,
     ):
         super().__init__(
@@ -60,6 +61,12 @@ class IntradayBacktester(PaperTrader):
         self.max_hold_minutes = max_hold_minutes
         self.min_profit_threshold_pct = min_profit_threshold_pct
         self.min_volatility_pct = min_volatility_pct
+        # When True, a strategy SELL signal is ignored and positions are closed
+        # only by the risk manager (trailing stop / stop-loss / take-profit),
+        # the time-exit, or the 15:10 square-off. Live post-exit drift analysis
+        # showed strategy sells fire into continuing momentum, so this tests
+        # letting a trailing stop decide the exit instead.
+        self.disable_strategy_sells = disable_strategy_sells
 
     def run(self, df: pd.DataFrame, ticker: str = "UNKNOWN") -> PaperTraderResult:
         portfolio = Portfolio(
@@ -120,7 +127,7 @@ class IntradayBacktester(PaperTrader):
                     pass  # dead market — not worth the commissions
                 else:
                     self._handle_buy(portfolio, ticker, price, ts, result.reason, idx=idx)
-            elif result.signal == Signal.SELL:
+            elif result.signal == Signal.SELL and not self.disable_strategy_sells:
                 self._handle_sell(portfolio, ticker, price, ts, result.reason)
                 already_sold = True
 

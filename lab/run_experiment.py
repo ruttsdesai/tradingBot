@@ -141,6 +141,37 @@ VARIANTS = {
         "params": {"trailing_stop_enabled": True, "trailing_stop_pct": 0.005,
                    "max_hold_minutes": 60},
     },
+
+    # ---- Trailing stop REPLACES the strategy SELL --------------------------
+    # Live post-exit drift analysis (120 exits, controlled against a 2898-bar
+    # random-time baseline) showed strategy sells are followed by +0.29pp MORE
+    # upside than a random moment: the bot sells into continuing momentum.
+    # The trail_* variants above ADD a trailing stop while keeping those sells.
+    # These REPLACE them, so a trailing stop alone decides when to exit.
+    "replace_trail_0.3": {
+        "desc": "No strategy sells; exit on 0.3% trailing stop",
+        "params": {"trailing_stop_enabled": True, "trailing_stop_pct": 0.003,
+                   "disable_strategy_sells": True},
+    },
+    "replace_trail_0.5": {
+        "desc": "No strategy sells; exit on 0.5% trailing stop",
+        "params": {"trailing_stop_enabled": True, "trailing_stop_pct": 0.005,
+                   "disable_strategy_sells": True},
+    },
+    "replace_trail_0.8": {
+        "desc": "No strategy sells; exit on 0.8% trailing stop",
+        "params": {"trailing_stop_enabled": True, "trailing_stop_pct": 0.008,
+                   "disable_strategy_sells": True},
+    },
+    "replace_trail_1.2": {
+        "desc": "No strategy sells; exit on 1.2% trailing stop",
+        "params": {"trailing_stop_enabled": True, "trailing_stop_pct": 0.012,
+                   "disable_strategy_sells": True},
+    },
+    "replace_hold_eod": {
+        "desc": "No strategy sells, no trailing; hold to 15:10 square-off",
+        "params": {"disable_strategy_sells": True, "max_hold_minutes": 10_000},
+    },
 }
 
 
@@ -173,6 +204,7 @@ def run_variant(name: str, spec: dict, tickers: list[str], strategies: list[str]
                 max_hold_minutes=p.get("max_hold_minutes", 120),
                 min_profit_threshold_pct=p.get("min_profit_threshold_pct", 0.005),
                 min_volatility_pct=p.get("min_volatility_pct", 0.0015),
+                disable_strategy_sells=p.get("disable_strategy_sells", False),
             )
             try:
                 res = bt.run(df, ticker=ticker)
