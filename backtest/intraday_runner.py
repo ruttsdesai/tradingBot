@@ -47,6 +47,7 @@ class IntradayBacktester(PaperTrader):
         min_profit_threshold_pct: float = 0.005,
         min_volatility_pct: float = 0.005,
         disable_strategy_sells: bool = False,
+        htf_ok=None,
         **kwargs,
     ):
         super().__init__(
@@ -67,6 +68,10 @@ class IntradayBacktester(PaperTrader):
         # showed strategy sells fire into continuing momentum, so this tests
         # letting a trailing stop decide the exit instead.
         self.disable_strategy_sells = disable_strategy_sells
+        # Optional higher-timeframe trend filter: a bool Series aligned to the
+        # bar index. When provided, BUYs are only allowed where it is True —
+        # i.e. "only trade with the bigger trend". None = no filter.
+        self.htf_ok = htf_ok
 
     def run(self, df: pd.DataFrame, ticker: str = "UNKNOWN") -> PaperTraderResult:
         portfolio = Portfolio(
@@ -125,6 +130,8 @@ class IntradayBacktester(PaperTrader):
                     pass  # too late in the day to open a position
                 elif atr_val > 0 and price > 0 and atr_val / price < self.min_volatility_pct:
                     pass  # dead market — not worth the commissions
+                elif self.htf_ok is not None and not bool(self.htf_ok.iloc[idx]):
+                    pass  # higher-timeframe trend disagrees — stand aside
                 else:
                     self._handle_buy(portfolio, ticker, price, ts, result.reason, idx=idx)
             elif result.signal == Signal.SELL and not self.disable_strategy_sells:
