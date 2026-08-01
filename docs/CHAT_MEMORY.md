@@ -471,6 +471,22 @@ volume surge vs trailing median, **VWAP deviation** (highest-ranked candidate), 
 Prior is still low (all price-derived signals have failed so far) but genuinely weaker than for trend
 filters, because volume has NOT been tested properly at intraday resolution.
 
+**2026-08-01 — VOLUME TESTED PROPERLY (`lab/run_volume.py`). NO EDGE. QUESTION CLOSED.**
+Prediction pre-registered before running (expect no edge; VWAP the likeliest exception). 8 volume
+signals x 5 tickers x horizons 5/15/30min on 55 days of 5m bars. All measures time-of-day adjusted or
+self-normalising, so the intraday U-shape cannot leak in as fake signal. Forward windows never cross a
+session boundary; effective N deflated by horizon.
+
+Signals: relvol_tod_high/dry (vs same time slot on prior days), vol_surge_2x (vs trailing median),
+above/below_vwap (session VWAP), up_on_high_vol, up_on_low_vol, down_on_high_vol.
+
+**RESULT: not one cleared |t|>=2 with >=80% consistency. Strongest was up_on_low_vol @5min,
+t=-1.12 — noise.** Spreads were tiny (|spread| <= 0.016% at 30min) and mostly NEGATIVE, i.e. high
+volume was followed by slightly WORSE returns. `above_vwap` was negative at all three horizons
+(-0.005/-0.007/-0.009%) — no momentum above VWAP; `below_vwap` was weakly positive (mild reversion)
+but t<=0.62, also noise. VWAP, the one I flagged as most plausible, showed nothing.
+**=> Volume does not predict the next candle on these names. Closed.
+
 **Security note:** user has repeatedly pasted Dhan JWT access tokens into chat. They expire in 24h;
 always tell them to regenerate rather than reuse, tokens go only in git-ignored `.env`, never commit
 `.env`. Paper mode needs no credentials at all.
