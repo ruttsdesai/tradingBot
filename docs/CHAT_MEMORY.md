@@ -359,6 +359,33 @@ indices/futures); 12y, one market; all signals are price-based from free data.
   data rather than backtest. Need many more days before any profitability claim; the strong prior from
   55d intraday + 12y swing + signal tests is still "no edge".
 
+**2026-08-01 — SL/TP AUDIT + POST-EXIT DRIFT ANALYSIS (user asked: should we widen SL/TP?):**
+- **Configured: stop_loss_pct 0.05 (5%), take_profit_pct 0.15 (15%), trailing_stop 0.08 (8%).**
+- **THEY HAVE NEVER FIRED. Not once.** Across 11 sessions / 131 exits: 110 consensus SELL,
+  11 TIME-EXIT, 10 SQUARE-OFF, **0 STOP-LOSS, 0 TAKE-PROFIT, 0 TRAILING-STOP.** They are sized for
+  SWING trading (5%/15% over weeks) while intraday moves are ~+/-0.3% (worst ever -1.84%). The 5% stop
+  sits ~3x further away than the worst move ever seen; 15% is a multi-month move. They are decorative.
+- **=> ANSWER TO USER: do NOT widen them. They should be SHRUNK to reachable levels or removed.**
+  From 120 exits with matching 5m bars: remaining intraday upside after exit averaged +1.03%
+  (90th pct +2.11%, max +5.13%). A +15% target was reachable **0/120** times; +1% in 39%; +0.5% in 56%.
+- **POST-EXIT DRIFT (the real finding): the bot EXITS TOO EARLY.** After exits, price was higher
+  59% (+15m), 64% (+30m), 60% (+60m), **68% (EOD)** of the time; avg +0.33/+0.35/+0.34/+0.47%.
+- **CONTROL FOR MARKET DRIFT (important — done properly):** compared against every bar on the same
+  tickers/days (2898-bar baseline). Our exits: +30m +0.35%, EOD +0.47%, maxup +1.03%.
+  Random bar: +0.02%, +0.18%, +0.68%. **Excess = +0.33pp / +0.29pp / +0.35pp — so it is NOT just a
+  rising market; the exits are genuinely premature.** Likely cause: mean-reversion (Bollinger/RSI)
+  sells into continuing momentum.
+- Scale: ~0.29% excess x ~Rs16k position x 120 exits ≈ Rs 5.5k left on the table over 7 days, vs
+  +Rs526 actually earned. (Upper bound — cannot capture all of it, and EOD holding adds square-off risk.)
+- **PROPOSED FIX (NOT yet tested):** the lever is the premature consensus SELL, not the SL/TP levels.
+  Candidate: replace/soften the consensus SELL with a REACHABLE trailing stop (~0.3-0.5%, vs the
+  useless 8%) so winners run. NOTE the corrected lab already found trail_0.5/0.8 only marginally
+  helpful (+0.27pp) — but those variants ADDED a trail on top of the existing sells rather than
+  REPLACING them. Test that distinction in the lab before promoting.
+- **REGIME CAVEAT:** this 7-day window had positive baseline drift (+0.18% EOD on random bars), i.e. a
+  rising market. In a falling market early exits would be an ADVANTAGE. Like everything else here, the
+  finding may be regime-dependent — do not treat it as universal.
+
 **Security note:** user has repeatedly pasted Dhan JWT access tokens into chat. They expire in 24h;
 always tell them to regenerate rather than reuse, tokens go only in git-ignored `.env`, never commit
 `.env`. Paper mode needs no credentials at all.
