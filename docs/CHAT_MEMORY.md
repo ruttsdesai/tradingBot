@@ -419,6 +419,30 @@ Added `disable_strategy_sells` to `IntradayBacktester` + 5 `replace_*` variants 
   `dhan_live_trader.py` to suppress the consensus SELL branch and enable a reachable trailing stop
   (currently 8% = inert; needs ~0.8%). Recommend paper validation before/after.
 
+**2026-08-01 (Sat) — TIMEFRAME COMPARISON. 5m WINS; SEARCH CLOSED.**
+Added `--interval` to run_experiment.py (load_bars/cache already keyed by interval). 55 days.
+
+| interval | best result | best variant | trades | win% |
+|---|---|---|---|---|
+| **5m** | **+1.33%** | **replace_trail_0.8** | 54 | 49% |
+| 15m | +0.77% | baseline | 23 | 57% |
+| 30m | +0.53% | (all tied) | 13 | 63% |
+
+- Larger candles gave **fewer trades and higher win rate** (54->23->13; 49%->57%->63%) — the hoped-for
+  cost-hurdle relief — but **lower net returns**. 5m + replace_trail_0.8 is the best result found.
+- **The exit policy is interval-dependent.** A 0.8% trail is LOOSE on 5m (~0.1% bars) but TIGHT on
+  15m/30m, so it stopped out on normal noise there. Scaling it up at 15m (swept 1.2/1.5/2.0/2.5/3.0)
+  helped (0.46% -> 0.64%) but **never beat 15m baseline (+0.77%)**.
+- **Confound found and then RESOLVED:** at 15m/30m every variant returned identical trade counts,
+  because max_hold_minutes=120 is only 8 bars (15m) / 4 bars (30m) — the time-exit fired before the
+  trailing stop could matter. Re-ran 15m with the time-exit effectively off: **everything got WORSE**
+  (baseline_longhold +0.51% vs baseline +0.77%; trail2.5_longhold +0.33%). So the 120-min time-exit is
+  genuinely HELPING at 15m, and the trailing stop does not help there at all.
+- **CONCLUSION: keep 5m + replace_trail_0.8. Monday 03 Aug config unchanged.**
+- **SEARCH DELIBERATELY STOPPED HERE.** ~13 variants x 3 intervals have now been tested on ONE 55-day
+  sample; every further comparison inflates the chance of a false positive. Continuing would be
+  overfitting, not research. Next evidence must come from LIVE paper data, not more backtest variants.
+
 **Security note:** user has repeatedly pasted Dhan JWT access tokens into chat. They expire in 24h;
 always tell them to regenerate rather than reuse, tokens go only in git-ignored `.env`, never commit
 `.env`. Paper mode needs no credentials at all.

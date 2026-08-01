@@ -188,6 +188,20 @@ VARIANTS = {
         "params": {"trailing_stop_enabled": True, "trailing_stop_pct": 0.03,
                    "disable_strategy_sells": True},
     },
+    "trail2.5_longhold": {
+        "desc": "15m-oriented: 2.5% trail, no strategy sells, time-exit effectively off",
+        "params": {"trailing_stop_enabled": True, "trailing_stop_pct": 0.025,
+                   "disable_strategy_sells": True, "max_hold_minutes": 10_000},
+    },
+    "trail1.5_longhold": {
+        "desc": "15m-oriented: 1.5% trail, no strategy sells, time-exit effectively off",
+        "params": {"trailing_stop_enabled": True, "trailing_stop_pct": 0.015,
+                   "disable_strategy_sells": True, "max_hold_minutes": 10_000},
+    },
+    "baseline_longhold": {
+        "desc": "Control: baseline but time-exit effectively off",
+        "params": {"max_hold_minutes": 10_000},
+    },
     "replace_hold_eod": {
         "desc": "No strategy sells, no trailing; hold to 15:10 square-off",
         "params": {"disable_strategy_sells": True, "max_hold_minutes": 10_000},
