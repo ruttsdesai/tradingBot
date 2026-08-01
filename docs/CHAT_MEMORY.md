@@ -443,6 +443,34 @@ Added `--interval` to run_experiment.py (load_bars/cache already keyed by interv
   sample; every further comparison inflates the chance of a false positive. Continuing would be
   overfitting, not research. Next evidence must come from LIVE paper data, not more backtest variants.
 
+**2026-08-01 — MULTI-TIMEFRAME FILTER (`lab/run_mtf.py`) — PREDICTION CONFIRMED, FAILS:**
+User asked: use 5m entries but only trade when a higher timeframe (15m/60m) agrees on trend.
+Prediction that it would FAIL was **pre-registered in the module docstring before running** (basis:
+the signal lab found every trend filter had a NEGATIVE forward spread, |t|<1.4). Method: ONE config
+per timeframe (close > SMA20 on resampled bars, `.shift(1)` so only CLOSED higher-TF bars are used —
+no look-ahead), not a sweep. Exit policy held constant at the live setting (replace_trail_0.8).
+
+| arm | avg ret | profitable | trades | win% | sharpe |
+|---|---|---|---|---|---|
+| **no_filter** | **+1.33%** | 13/15 | 54 | 49% | **0.86** |
+| filter_60m | +0.80% | 11/15 | 29 | 49% | 0.70 |
+| filter_15m | +0.06% | 10/15 | 28 | 45% | 0.01 |
+
+- Filters roughly HALVED trades (54 -> ~29) but **cost return** (-0.54pp for 60m, -1.27pp for 15m) and
+  did not improve win rate. The higher-TF trend removed good and bad trades indiscriminately —
+  consistent with the signal lab's finding that trend has no predictive power on these names.
+- Filters were "on" only 53-56% of bars, so this is a real halving of opportunity for no quality gain.
+- **CONFIRMS: keep 5m + replace_trail_0.8, no HTF filter. Monday 03 Aug config unchanged.**
+
+**OPEN QUESTION — VOLUME (user asked; NOT yet properly tested):** the signal lab's `volume_above_avg`
+showed ~zero predictive power (20d spread -0.00%, t=-0.02) BUT that test ran on DAILY bars vs a 50-day
+average. **That is a weak test for intraday purposes** — intraday volume has a strong U-shape (heavy at
+open/close, thin midday), so a raw "above average" test mostly detects TIME OF DAY, not information.
+A proper test needs time-of-day-adjusted measures: relative volume vs the same time slot on prior days,
+volume surge vs trailing median, **VWAP deviation** (highest-ranked candidate), volume-price divergence.
+Prior is still low (all price-derived signals have failed so far) but genuinely weaker than for trend
+filters, because volume has NOT been tested properly at intraday resolution.
+
 **Security note:** user has repeatedly pasted Dhan JWT access tokens into chat. They expire in 24h;
 always tell them to regenerate rather than reuse, tokens go only in git-ignored `.env`, never commit
 `.env`. Paper mode needs no credentials at all.
