@@ -168,6 +168,26 @@ VARIANTS = {
         "params": {"trailing_stop_enabled": True, "trailing_stop_pct": 0.012,
                    "disable_strategy_sells": True},
     },
+    "replace_trail_1.5": {
+        "desc": "No strategy sells; exit on 1.5% trailing stop (scaled for larger candles)",
+        "params": {"trailing_stop_enabled": True, "trailing_stop_pct": 0.015,
+                   "disable_strategy_sells": True},
+    },
+    "replace_trail_2.0": {
+        "desc": "No strategy sells; exit on 2.0% trailing stop (scaled for larger candles)",
+        "params": {"trailing_stop_enabled": True, "trailing_stop_pct": 0.02,
+                   "disable_strategy_sells": True},
+    },
+    "replace_trail_2.5": {
+        "desc": "No strategy sells; exit on 2.5% trailing stop (scaled for larger candles)",
+        "params": {"trailing_stop_enabled": True, "trailing_stop_pct": 0.025,
+                   "disable_strategy_sells": True},
+    },
+    "replace_trail_3.0": {
+        "desc": "No strategy sells; exit on 3.0% trailing stop (scaled for larger candles)",
+        "params": {"trailing_stop_enabled": True, "trailing_stop_pct": 0.03,
+                   "disable_strategy_sells": True},
+    },
     "replace_hold_eod": {
         "desc": "No strategy sells, no trailing; hold to 15:10 square-off",
         "params": {"disable_strategy_sells": True, "max_hold_minutes": 10_000},
