@@ -386,6 +386,39 @@ indices/futures); 12y, one market; all signals are price-based from free data.
   rising market. In a falling market early exits would be an ADVANTAGE. Like everything else here, the
   finding may be regime-dependent — do not treat it as universal.
 
+**2026-08-01 — HYPOTHESIS TESTED IN LAB: trailing stop REPLACING strategy sells. BEST RESULT SO FAR:**
+Added `disable_strategy_sells` to `IntradayBacktester` + 5 `replace_*` variants in run_experiment.py.
+55 days, 5 tickers x 3 strategies (15 combos), fresh data, costs both sides.
+
+| variant | avg ret | profitable | trades | sharpe |
+|---|---|---|---|---|
+| **replace_trail_0.8** | **+1.33%** | **13/15 (87%)** | 54 | **0.86** |
+| replace_trail_0.5 | +1.09% | 10/15 | 55 | 0.77 |
+| replace_trail_1.2 | +0.87% | 11/15 | 52 | 0.48 |
+| trail_0.8 (ADD) | +0.64% | 9/15 | 55 | 0.46 |
+| **baseline** | **+0.41%** | 9/15 | 52 | 0.44 |
+| replace_hold_eod | +0.41% | 9/15 | 42 | 0.30 |
+| replace_trail_0.3 | +0.20% | 6/15 | 59 | 0.17 |
+
+- **REPLACING beats ADDING at matched trail levels** (0.8%: +1.33 vs +0.64; 0.5%: +1.09 vs +0.59) —
+  exactly what the post-exit drift analysis predicted. The sells themselves were the problem.
+- **Improvement is BROAD, not one outlier:** 13/15 combos profitable vs 9/15; biggest gains on the
+  WORST cases (ASIANPAINT/ma_crossover -6.2% -> -2.6%); Sharpe ~doubled (0.44 -> 0.86).
+- **`replace_hold_eod` == baseline (+0.41%) with FEWEST trades (42)** — the key control: simply not
+  selling does NOT help (gains handed back by the close). The TRAILING STOP is doing the real work,
+  not merely cost savings from fewer trades.
+- **COST STRESS (0.001/side, double): replace_trail_0.8 is the ONLY variant still positive (+0.24%)**;
+  baseline -0.80%, trail_0.8 -0.64%, replace_hold_eod -0.31%. Gap vs baseline WIDENS to +1.04pp under
+  stress => the edge is robust to the cost assumption, not an artifact of it.
+- **ANNUALIZED REALITY CHECK:** +1.33%/55d ≈ **+6.3%/yr** (vs baseline ~+1.9%/yr); at doubled costs
+  ≈ +1.1%/yr (vs baseline ~-3.6%/yr). So this roughly TRIPLES the return and survives stress — but is
+  still **below a risk-free FD (~7%) and far below buy & hold (+13-17%/yr)**. It makes a losing system
+  much less bad; it does NOT make it a winner.
+- **PROMOTE CHECKLIST: steps 1-2 PASSED** (beats baseline; survives cost stress). Step 3 (promotion)
+  pending user decision. **NOTE: live promotion is NOT config-only** — it needs a code change in
+  `dhan_live_trader.py` to suppress the consensus SELL branch and enable a reachable trailing stop
+  (currently 8% = inert; needs ~0.8%). Recommend paper validation before/after.
+
 **Security note:** user has repeatedly pasted Dhan JWT access tokens into chat. They expire in 24h;
 always tell them to regenerate rather than reuse, tokens go only in git-ignored `.env`, never commit
 `.env`. Paper mode needs no credentials at all.
