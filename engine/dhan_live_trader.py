@@ -139,6 +139,17 @@ class DhanLiveTraderConfig:
     tg_api_hash: str = ""
     tg_session: str = "dhan_trader"
     reentry_cooldown_minutes: int = 15   # after exiting a symbol, wait this long before re-buying it (0 = off; curbs churn)
+    # ── Exit policy ────────────────────────────────────────────────────
+    # Lab (55d, 15 combos, costs both sides) found that REPLACING the
+    # strategy SELL with a reachable trailing stop beat the baseline
+    # +1.33% vs +0.41%, 13/15 combos profitable vs 9/15, Sharpe 0.86 vs
+    # 0.44 — and was the only variant still positive at doubled costs.
+    # Live post-exit drift analysis predicted this: strategy sells fired
+    # into continuing momentum (+0.29pp more upside than a random moment).
+    disable_strategy_sells: bool = False   # ignore strategy SELL; let the trailing stop exit
+    trailing_stop_enabled: bool = False
+    trailing_stop_pct: float = 0.008       # 0.8% below peak — reachable intraday (8% never fires)
+    trailing_stop_atr_mult: float = 0.0    # >0 uses ATR*mult below peak instead of the pct
 
 
 # ---------------------------------------------------------------------------
@@ -185,6 +196,9 @@ class DhanLiveTrader:
             max_daily_loss_pct=config.max_daily_loss_pct,
             stop_loss_pct=config.stop_loss_pct,
             take_profit_pct=config.take_profit_pct,
+            trailing_stop_enabled=config.trailing_stop_enabled,
+            trailing_stop_pct=config.trailing_stop_pct,
+            trailing_stop_atr_mult=config.trailing_stop_atr_mult,
         )
         self._dhan = None
         self._security_id_cache: dict[str, str] = dict(_KNOWN_SECURITY_IDS)
@@ -1260,10 +1274,13 @@ class DhanLiveTrader:
                                 avg_entry_price=entry_price,
                                 entry_date=datetime.now(),
                             )
+                            # Start trailing-stop tracking for this position
+                            self.risk_manager.mark_entry(base, entry_price)
                             # Place broker-level stop-loss and take-profit orders
                             self._place_sl_tp_orders(ticker, base, order["qty"], entry_price)
 
-            elif consensus == Signal.SELL and base in portfolio.positions:
+            elif (consensus == Signal.SELL and base in portfolio.positions
+                  and not self.config.disable_strategy_sells):
                 pos = portfolio.positions.get(base)
                 if pos is not None and pos.quantity > 0:
                     # Cancel SL/TP orders before selling (they're no longer needed)
@@ -1291,10 +1308,15 @@ class DhanLiveTrader:
                         portfolio.current_cash += order["qty"] * (exit_price or price)
                         del portfolio.positions[base]
                         self._last_exit_time[base] = datetime.now()
+                        self.risk_manager.clear_entry(base)
 
-            # Check stop-loss / take-profit
+            # Check stop-loss / take-profit / trailing stop. The peak must be
+            # refreshed with the current price first, or the trailing stop
+            # never moves and can never fire.
             if base in portfolio.positions:
-                risk = self.risk_manager.check_sell(portfolio, base, price)
+                self.risk_manager.update_trailing_stop(base, price)
+                risk = self.risk_manager.check_sell(portfolio, base, price,
+                                                    atr_value=atr_val or 0.0)
                 if risk.action == RiskAction.STOP_LOSS:
                     pos = portfolio.positions[base]
                     self.cancel_sl_tp_orders(ticker)
@@ -1304,6 +1326,7 @@ class DhanLiveTrader:
                         portfolio.current_cash += order["qty"] * (order.get("filled_avg_price") or price)
                         del portfolio.positions[base]
                         self._last_exit_time[base] = datetime.now()
+                        self.risk_manager.clear_entry(base)
                         self._notify(
                             format_sl_msg(ticker, risk.reason, self.strategy.name)
                         )
@@ -1316,6 +1339,7 @@ class DhanLiveTrader:
                         portfolio.current_cash += order["qty"] * (order.get("filled_avg_price") or price)
                         del portfolio.positions[base]
                         self._last_exit_time[base] = datetime.now()
+                        self.risk_manager.clear_entry(base)
                         self._notify(
                             format_tp_msg(ticker, risk.reason, self.strategy.name)
                         )
@@ -1328,6 +1352,7 @@ class DhanLiveTrader:
                         portfolio.current_cash += order["qty"] * (order.get("filled_avg_price") or price)
                         del portfolio.positions[base]
                         self._last_exit_time[base] = datetime.now()
+                        self.risk_manager.clear_entry(base)
                         self._notify(
                             format_sell_msg(
                                 ticker, order["qty"], order.get("filled_avg_price"),
@@ -1355,6 +1380,7 @@ class DhanLiveTrader:
                             portfolio.current_cash += order["qty"] * (order.get("filled_avg_price") or price)
                             del portfolio.positions[base]
                             self._last_exit_time[base] = datetime.now()
+                            self.risk_manager.clear_entry(base)
                             self._notify(
                                 format_sell_msg(
                                     ticker, order["qty"], order.get("filled_avg_price"),
@@ -1414,6 +1440,12 @@ class DhanLiveTrader:
                 print(f"  Interval:     {self.config.intraday_interval} (INTRADAY — MIS orders)")
                 print(f"  Auto-exit:    {self.config.max_hold_minutes}min stale | Stop-buy: 15:00 | Square-off: 15:10")
                 print(f"  Vol filter:   ATR/close >= {self.config.min_volatility_pct:.1%}")
+            if self.config.disable_strategy_sells or self.config.trailing_stop_enabled:
+                exit_by = ("trailing stop only (strategy SELLs ignored)"
+                           if self.config.disable_strategy_sells else "strategy SELL + trailing stop")
+                print(f"  Exit policy:  {exit_by}")
+                if self.config.trailing_stop_enabled:
+                    print(f"  Trailing:     {self.config.trailing_stop_pct:.2%} below peak")
             print()
         except Exception as e:
             print(f"\n=== Dhan Live Trader ({mode}) === (balance unavailable: {e})\n")
