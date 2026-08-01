@@ -246,6 +246,8 @@ def run_variant(name: str, spec: dict, tickers: list[str], strategies: list[str]
 
 def main():
     ap = argparse.ArgumentParser(description="Strategy Lab — test before promoting")
+    ap.add_argument("--interval", default="5m",
+                    help="Candle interval: 1m,5m,15m,30m,1h (1m only has ~7 days of history)")
     ap.add_argument("--days", type=int, default=55,
                     help="Days of 5m history (yfinance caps ~60)")
     ap.add_argument("--cost-pct", type=float, default=DEFAULT_COST_PCT,
@@ -271,7 +273,7 @@ def main():
     print("=" * 78)
     print(f"  Tickers    : {', '.join(tickers)}")
     print(f"  Strategies : {', '.join(LIVE_STRATEGIES)}")
-    print(f"  History    : {args.days} days of 5m bars")
+    print(f"  History    : {args.days} days of {args.interval} bars")
     print(f"  Cost/side  : {args.cost_pct:.4%}  (~{args.cost_pct*2:.3%} round trip)")
     print("=" * 78)
 
@@ -279,7 +281,7 @@ def main():
     data = {}
     for t in tickers:
         try:
-            df = load_bars(t, args.days, refresh=args.refresh)
+            df = load_bars(t, args.days, interval=args.interval, refresh=args.refresh)
             data[t] = df
             print(f"  {t:16} {len(df):>5} bars")
         except Exception as e:
