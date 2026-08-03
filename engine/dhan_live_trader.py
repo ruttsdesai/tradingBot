@@ -1440,12 +1440,23 @@ class DhanLiveTrader:
                 print(f"  Interval:     {self.config.intraday_interval} (INTRADAY — MIS orders)")
                 print(f"  Auto-exit:    {self.config.max_hold_minutes}min stale | Stop-buy: 15:00 | Square-off: 15:10")
                 print(f"  Vol filter:   ATR/close >= {self.config.min_volatility_pct:.1%}")
-            if self.config.disable_strategy_sells or self.config.trailing_stop_enabled:
+            # Report the RISK MANAGER's actual values, not the config's. A
+            # caller can pass an explicit risk_manager that overrides config,
+            # which is exactly how a 2.0 ATR trail silently replaced the
+            # intended 0.8% pct trail on 2026-08-03. Print the truth.
+            rm = self.risk_manager
+            if self.config.disable_strategy_sells or rm.trailing_stop_enabled:
                 exit_by = ("trailing stop only (strategy SELLs ignored)"
                            if self.config.disable_strategy_sells else "strategy SELL + trailing stop")
                 print(f"  Exit policy:  {exit_by}")
-                if self.config.trailing_stop_enabled:
-                    print(f"  Trailing:     {self.config.trailing_stop_pct:.2%} below peak")
+                if rm.trailing_stop_enabled:
+                    if rm.trailing_stop_atr_mult > 0:
+                        print(f"  Trailing:     {rm.trailing_stop_atr_mult}x ATR below peak "
+                              f"(ATR mode — pct {rm.trailing_stop_pct:.2%} is IGNORED)")
+                    else:
+                        print(f"  Trailing:     {rm.trailing_stop_pct:.2%} below peak")
+                else:
+                    print("  Trailing:     DISABLED — nothing will exit early!")
             print()
         except Exception as e:
             print(f"\n=== Dhan Live Trader ({mode}) === (balance unavailable: {e})\n")

@@ -487,6 +487,33 @@ volume was followed by slightly WORSE returns. `above_vwap` was negative at all 
 but t<=0.62, also noise. VWAP, the one I flagged as most plausible, showed nothing.
 **=> Volume does not predict the next candle on these names. Closed.
 
+**2026-08-03 (Mon) — FIRST LIVE RUN OF NEW EXIT POLICY. MY BUG: WRONG TRAIL SHIPPED.**
+- Trailing stop DID fire — **11 TRAILING-STOP exits** (vs 0 across 131 exits before), so the missing
+  mark_entry/update_trailing_stop/clear_entry plumbing is genuinely fixed. Also 2 TIME-EXIT, 0 WARN
+  gaps, 370 cycles, clean session.
+- **BUT THE TRAIL WAS ~0.39%, NOT THE INTENDED 0.8%.** Trigger depths ranged -0.31% to -0.59%
+  (avg -0.39%), and implied trail-vs-peak worked out to 0.29-0.57% — varying, i.e. the **ATR path**
+  (`peak - 2.0*ATR`), not the fixed-pct path.
+- **ROOT CAUSE (my error):** `cli.py` builds an explicit `RiskManager` for dhan-live reading the
+  GLOBAL `risk:` block (`trailing_stop_atr_mult: 2.0`, `trailing_stop_pct: 0.08`) and passes it as
+  `risk_manager=risk`. `DhanLiveTrader.__init__` does `risk_manager or RiskManager(...config...)`, so
+  the passed one WINS and my new dhan_live_trading trailing settings were silently ignored. I added the
+  config fields and verified them on the config object, but never checked the risk manager the CLI
+  actually injects.
+- **WHY IT MATTERS:** the lab ranked tight trails WORST (replace_trail_0.3 +0.20% vs replace_trail_0.8
+  +1.33%). Monday effectively ran ~the 0.3-0.4% variant — an untested-in-live, lab-worst setting.
+  Day result **-Rs374.02** (equity 100,765.89 -> 100,391.88). **This day does NOT test the validated
+  policy and should be excluded from the before/after comparison.**
+- **FIXES:** (a) cli.py dhan-live RiskManager now reads trailing settings from `dhan_cfg` (falling back
+  to risk_cfg); (b) startup now prints the RISK MANAGER's actual values, incl. an explicit
+  "ATR mode — pct IGNORED" warning and a "Trailing: DISABLED" warning, so a config/injection mismatch
+  can never hide again. Verified startup now shows `Trailing: 0.80% below peak`.
+- **Churn note:** only **13 real BUY fills** but **63 BUY skipped by re-entry cooldown**
+  (SUNPHARMA 21, BAJFINANCE 21, ASIANPAINT 13). The 15m cooldown is now doing heavy lifting — worth
+  watching whether it is over-blocking once the correct trail is in place.
+- **USER MUST `git pull` BEFORE THE NEXT SESSION** to get the trail fix, then re-run. Tue 04 Aug is the
+  first genuine test of replace_trail_0.8 in live paper.
+
 **Security note:** user has repeatedly pasted Dhan JWT access tokens into chat. They expire in 24h;
 always tell them to regenerate rather than reuse, tokens go only in git-ignored `.env`, never commit
 `.env`. Paper mode needs no credentials at all.

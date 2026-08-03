@@ -1770,9 +1770,15 @@ def dhan_live(ticker, strategies, all_strategies, once, live_mode, paper_mode, c
         max_daily_loss_pct=risk_cfg["max_daily_loss_pct"],
         stop_loss_pct=risk_cfg["stop_loss_pct"],
         take_profit_pct=risk_cfg["take_profit_pct"],
-        trailing_stop_enabled=risk_cfg.get("trailing_stop_enabled", False),
-        trailing_stop_pct=risk_cfg.get("trailing_stop_pct", 0.08),
-        trailing_stop_atr_mult=risk_cfg.get("trailing_stop_atr_mult", 2.0),
+        # Trailing-stop settings MUST come from dhan_live_trading, not the
+        # global `risk:` block. This RiskManager is passed explicitly to the
+        # trader, so it OVERRIDES the one DhanLiveTrader builds from its own
+        # config — reading risk_cfg here silently ignored the dhan settings and
+        # ran an ATR trail (mult 2.0, ~0.3%) instead of the intended 0.8% pct
+        # trail. That shipped to live paper on 2026-08-03.
+        trailing_stop_enabled=dhan_cfg.get("trailing_stop_enabled", risk_cfg.get("trailing_stop_enabled", False)),
+        trailing_stop_pct=dhan_cfg.get("trailing_stop_pct", risk_cfg.get("trailing_stop_pct", 0.08)),
+        trailing_stop_atr_mult=dhan_cfg.get("trailing_stop_atr_mult", risk_cfg.get("trailing_stop_atr_mult", 0.0)),
         correlation_enabled=risk_cfg.get("correlation_enabled", False),
         correlation_threshold=risk_cfg.get("correlation_threshold", 0.70),
         max_cluster_allocation_pct=risk_cfg.get("max_cluster_allocation_pct", 0.40),
