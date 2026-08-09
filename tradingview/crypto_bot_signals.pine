@@ -1,0 +1,176 @@
+// =============================================================================
+//  Crypto Bot Signals — the same consensus logic, adapted for 24/7 crypto
+// =============================================================================
+//  This is NOT a copy of the NSE script. Crypto differs in ways that make a
+//  naive port wrong:
+//
+//    - 24/7 market: there is no session close, so the 15:00 stop-buy and 15:10
+//      square-off rules are meaningless and are REMOVED.
+//    - Volatility is ~10x higher (BTC moves 2-4%/day vs ~0.3% intraday on NSE
+//      large-caps), so the volatility filter and stop distances are rescaled.
+//    - Costs are HIGHER, not lower: Binance taker is ~0.1% per side (~0.2%
+//      round trip) vs ~0.1% round trip on Dhan. Frequent trading is therefore
+//      punished harder here, which is why this defaults to 4H/1D, not 5m.
+//
+//  MEASURED BEFORE BUILDING (5y daily, costs charged both sides at 0.1%/side):
+//
+//    BTC-USD  buy & hold +7.3%/yr
+//      rsi_mean_revert  +8.2%/yr  (+0.9 vs B&H)   <- best, but inside noise
+//      macd             +5.1%/yr  (-2.1)
+//      ma_crossover     +4.1%/yr  (-3.1)
+//      momentum         +2.3%/yr  (-4.9)
+//      bollinger        +0.8%/yr  (-6.4)
+//
+//    ETH-USD  buy & hold -9.4%/yr
+//      momentum        +12.3%/yr (+21.7 vs B&H)
+//      ma_crossover     +4.8%/yr (+14.2)
+//      rsi              +3.1%/yr (+12.5)
+//
+//  Read that honestly: the strategies beat buy & hold on ETH mainly because
+//  ETH FELL 39% and they sat out part of the decline. On BTC, which rose, only
+//  one edged past holding and only by 0.9pp. That is the same "insurance, not
+//  alpha" pattern found on NSE — helpful in downtrends, a drag in uptrends.
+//  Drawdowns were also severe: -23% to -58%.
+//
+//  Use these as a structured second opinion, not as buy/sell instructions.
+//
+//  Setup: Pine Editor -> paste -> Add to chart. Best on 4H or 1D.
+// =============================================================================
+
+//@version=5
+indicator("Crypto Bot Signals", overlay=true, max_labels_count=500)
+
+// ---------------------------------------------------------------- inputs ----
+grpS = "Strategy parameters"
+rsiLen  = input.int(14,   "RSI length",             group=grpS, minval=2)
+rsiBuy  = input.float(30, "RSI oversold (buy)",     group=grpS)
+rsiSell = input.float(70, "RSI overbought (sell)",  group=grpS)
+bbLen   = input.int(20,   "Bollinger length",       group=grpS, minval=2)
+bbStd   = input.float(2.0,"Bollinger std dev",      group=grpS, step=0.1)
+maFast  = input.int(20,   "MA fast",                group=grpS, minval=1)
+maSlow  = input.int(50,   "MA slow",                group=grpS, minval=2)
+useMom  = input.bool(true,"Include momentum breakout (best on ETH)", group=grpS)
+momLen  = input.int(20,   "Breakout lookback",      group=grpS, minval=2)
+
+grpR = "Risk / filters  (crypto-scaled)"
+useVolFilter = input.bool(true, "Volatility filter", group=grpR)
+minVolPct    = input.float(1.0, "Min ATR/close %",   group=grpR, step=0.1,
+     tooltip="Crypto ATR/close runs ~2-4% daily. 1% skips only genuinely dead periods. The NSE bot used 0.15% because those stocks barely move.")
+atrLen       = input.int(14,  "ATR length",          group=grpR, minval=1)
+useTrail     = input.bool(true, "Trailing stop",     group=grpR)
+trailPct     = input.float(8.0, "Trailing stop %",   group=grpR, step=0.5,
+     tooltip="Crypto needs a MUCH wider trail than equities. A 0.8% trail (the NSE setting) would be stopped out by ordinary hourly noise.")
+cooldownBars = input.int(3, "Re-entry cooldown (bars)", group=grpR, minval=0)
+
+grpV = "Display"
+showBands = input.bool(true,  "Show Bollinger bands", group=grpV)
+showMAs   = input.bool(true,  "Show moving averages", group=grpV)
+showVotes = input.bool(true,  "Show vote table",      group=grpV)
+
+// ------------------------------------------------------------ indicators ----
+rsi    = ta.rsi(close, rsiLen)
+basis  = ta.sma(close, bbLen)
+dev    = bbStd * ta.stdev(close, bbLen)
+upper  = basis + dev
+lower  = basis - dev
+fast   = ta.sma(close, maFast)
+slow   = ta.sma(close, maSlow)
+atr    = ta.atr(atrLen)
+volPct = close > 0 ? atr / close * 100.0 : 0.0
+hiN    = ta.highest(close, momLen)[1]
+loN    = ta.lowest(close, momLen)[1]
+
+// ------------------------------------------------------- strategy signals ----
+rsiBuySig  = rsi < rsiBuy
+rsiSellSig = rsi > rsiSell
+bbBuySig   = close <= lower
+bbSellSig  = close >= upper
+maBuySig   = ta.crossover(fast, slow)
+maSellSig  = ta.crossunder(fast, slow)
+momBuySig  = useMom and close > hiN
+momSellSig = useMom and close < loN
+
+// ------------------------------------------------------------- consensus ----
+buyVotes  = (rsiBuySig ?1:0) + (bbBuySig ?1:0) + (maBuySig ?1:0) + (momBuySig ?1:0)
+sellVotes = (rsiSellSig?1:0) + (bbSellSig?1:0) + (maSellSig?1:0) + (momSellSig?1:0)
+nStrat    = useMom ? 4 : 3
+
+consensusBuy  = buyVotes  > sellVotes
+consensusSell = sellVotes > buyVotes
+
+// --------------------------------------------------------------- position ----
+var bool  inPos     = false
+var float entry     = na
+var float peak      = na
+var int   exitBar   = na
+
+inCooldown = not na(exitBar) and (bar_index - exitBar) < cooldownBars
+lowVol     = useVolFilter and volPct < minVolPct
+
+if inPos
+    peak := math.max(nz(peak, close), close)
+
+trailHit = useTrail and inPos and not na(peak) and close <= peak * (1 - trailPct/100)
+
+buySignal  = consensusBuy and not inPos and not lowVol and not inCooldown
+sellSignal = inPos and (consensusSell or trailHit)
+
+if buySignal
+    inPos := true
+    entry := close
+    peak  := close
+if sellSignal
+    inPos   := false
+    exitBar := bar_index
+    peak    := na
+    entry   := na
+
+// ------------------------------------------------------------------ plots ----
+plot(showMAs   ? fast : na, "MA fast", color=color.new(color.aqua,0))
+plot(showMAs   ? slow : na, "MA slow", color=color.new(color.orange,0))
+pu = plot(showBands ? upper : na, "BB upper", color=color.new(color.gray,50))
+pl = plot(showBands ? lower : na, "BB lower", color=color.new(color.gray,50))
+fill(pu, pl, color=color.new(color.gray,92))
+plot(inPos and useTrail ? peak * (1 - trailPct/100) : na, "Trail stop",
+     color=color.new(color.red,20), style=plot.style_linebr)
+
+plotshape(buySignal,  title="BUY",  style=shape.labelup,   location=location.belowbar,
+          color=color.new(color.green,0), textcolor=color.white, text="BUY",  size=size.small)
+plotshape(sellSignal and not trailHit, title="SELL", style=shape.labeldown,
+          location=location.abovebar, color=color.new(color.red,0),
+          textcolor=color.white, text="SELL", size=size.small)
+plotshape(trailHit, title="TRAIL STOP", style=shape.labeldown, location=location.abovebar,
+          color=color.new(color.maroon,0), textcolor=color.white, text="TRAIL", size=size.small)
+plotshape(consensusBuy and not inPos and (lowVol or inCooldown),
+          title="BUY blocked", style=shape.xcross, location=location.belowbar,
+          color=color.new(color.gray,30), size=size.tiny)
+
+// ------------------------------------------------------------ vote table ----
+if showVotes and barstate.islast
+    var table t = table.new(position.top_right, 2, 8, border_width=1)
+    row(r,k,v,c) =>
+        table.cell(t,0,r,k,text_color=color.gray,text_size=size.small,text_halign=text.align_left)
+        table.cell(t,1,r,v,text_color=c,text_size=size.small,text_halign=text.align_right)
+    txt(b,s) => b ? "BUY" : s ? "SELL" : "HOLD"
+    col(b,s) => b ? color.green : s ? color.red : color.gray
+
+    row(0,"RSI "+str.tostring(rsi,"#.0"), txt(rsiBuySig,rsiSellSig), col(rsiBuySig,rsiSellSig))
+    row(1,"Bollinger",  txt(bbBuySig,bbSellSig),   col(bbBuySig,bbSellSig))
+    row(2,"MA cross",   txt(maBuySig,maSellSig),   col(maBuySig,maSellSig))
+    row(3, useMom ? "Momentum" : "Momentum (off)",
+          useMom ? txt(momBuySig,momSellSig) : "-",
+          useMom ? col(momBuySig,momSellSig) : color.gray)
+    row(4,"Consensus",
+        consensusBuy  ? "BUY "  + str.tostring(buyVotes)  + "/" + str.tostring(nStrat) :
+        consensusSell ? "SELL " + str.tostring(sellVotes) + "/" + str.tostring(nStrat) : "none",
+        consensusBuy ? color.green : consensusSell ? color.red : color.gray)
+    row(5,"ATR/close", str.tostring(volPct,"#.00")+"%", lowVol ? color.red : color.green)
+    row(6,"Position",  inPos ? "LONG" : "flat", inPos ? color.green : color.gray)
+    row(7,"Trail stop",
+        inPos and useTrail ? str.tostring(peak*(1-trailPct/100), format.mintick) : "-",
+        color.red)
+
+// ----------------------------------------------------------------- alerts ----
+alertcondition(buySignal,  "Crypto BUY",  "Consensus BUY on {{ticker}} at {{close}}")
+alertcondition(sellSignal, "Crypto SELL", "Consensus SELL on {{ticker}} at {{close}}")
+alertcondition(trailHit,   "Trail stop",  "Trailing stop hit on {{ticker}} at {{close}}")

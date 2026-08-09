@@ -1,5 +1,13 @@
 # TradingView / Manual Trading
 
+Two scripts:
+
+| File | For | Best timeframe |
+|---|---|---|
+| `dhan_bot_signals.pine` | NSE equities — mirrors the live bot exactly | 5m |
+| `crypto_bot_signals.pine` | BTC / ETH / crypto — 24/7, rescaled | 4H or 1D |
+
+
 `dhan_bot_signals.pine` mirrors the Python bot's decision logic on a chart, so
 you can see the same BUY/SELL calls and trade them by hand.
 
@@ -58,3 +66,46 @@ the occasional marginal call will not match exactly.
 Dhan has no Pine Script equivalent — it isn't a charting-script platform in that
 sense. The practical path is to keep the signals in TradingView and place orders
 in Dhan manually, or use TradingView alerts as the prompt to act.
+
+
+---
+
+# Crypto script (`crypto_bot_signals.pine`)
+
+Not a copy of the NSE one — crypto differs in ways that make a naive port wrong:
+
+- **24/7 market** → the 15:00 stop-buy and 15:10 square-off rules are meaningless and are removed
+- **~10x the volatility** (BTC moves 2-4%/day vs ~0.3% intraday on NSE large-caps) → volatility filter
+  raised from 0.15% to 1.0%, and the trailing stop from 0.8% to 8%. A 0.8% trail would be stopped out
+  by ordinary hourly noise.
+- **Costs are HIGHER, not lower** — Binance taker ~0.1%/side (~0.2% round trip) vs ~0.1% round trip on
+  Dhan. Frequent trading is punished harder, which is why it defaults to 4H/1D rather than 5m.
+- Adds **momentum breakout**, which was the best performer on ETH.
+
+## What the backtest actually said
+
+5 years of daily bars, costs charged on both sides:
+
+| BTC-USD | CAGR | vs buy & hold |
+|---|---|---|
+| **buy & hold** | **+7.3%/yr** | — |
+| rsi_mean_revert | +8.2% | **+0.9** |
+| macd | +5.1% | -2.1 |
+| ma_crossover | +4.1% | -3.1 |
+| momentum | +2.3% | -4.9 |
+| bollinger | +0.8% | -6.4 |
+
+| ETH-USD | CAGR | vs buy & hold |
+|---|---|---|
+| **buy & hold** | **-9.4%/yr** | — |
+| momentum | +12.3% | **+21.7** |
+| ma_crossover | +4.8% | +14.2 |
+| rsi_mean_revert | +3.1% | +12.5 |
+
+**Read this honestly.** The strategies beat buy & hold on ETH mainly because **ETH fell 39%** and they
+sat out part of the decline. On BTC, which rose, only one edged past holding — by 0.9pp, well inside
+noise. That is the same *insurance, not alpha* pattern found on NSE: helpful in downtrends, a drag in
+uptrends. Drawdowns were also severe, -23% to -58%.
+
+So crypto is not a way around the earlier conclusion. What it does avoid is the cost problem — at
+~10 trades/year the cost drag is negligible, unlike NSE intraday's ~53%/yr.
