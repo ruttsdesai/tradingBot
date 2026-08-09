@@ -9,6 +9,14 @@
 
 **Branch:** `claude/continued-session-4tt3yo` (PR #1). All work below is committed + pushed here.
 
+**LAPTOP LAYOUT (updated 2026-08-09):**
+- Bot repo: **`C:\Trading\tradingBot`** (was `C:\tradingBot`, originally `C:\WINDOWS\system32\tradingBot`)
+- Pine scripts the user actually opens: **`C:\Trading\Manual Trading`** — a COPY taken out of the
+  repo's `tradingview/` folder. **`git pull` does NOT update that copy**; if a .pine file changes,
+  the user must re-copy it (or say so and I can re-send the file).
+- Nothing in the code hardcodes a path — both .bat files use `cd /d "%~dp0"`, and `.env`,
+  `dhan_trader.session`, `state/` and `logs/` are all relative to the repo root, so the move is safe.
+
 **What we're doing:** zero-cost forward paper testing of the Dhan intraday bot on ₹100k virtual
 capital, 6 tickers (AXISBANK, ASIANPAINT, BAJFINANCE, M&M, SUNPHARMA, KOTAKBANK) × 3 strategies
 (RSI_MeanReversion, BollingerBands, MA_Crossover). Goal: ~2 weeks of clean sessions → go/no-go.

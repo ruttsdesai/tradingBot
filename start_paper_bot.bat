@@ -4,7 +4,7 @@ REM  Dhan PAPER trading bot - double-click to start the day.
 REM  Runs the evidence-backed winner set (6 tickers, 3 strategies)
 REM  with Rs 1,00,000 virtual capital. No real money, no keys.
 REM
-REM  Keep this repo OUTSIDE C:\Windows\System32 (e.g. C:\tradingBot)
+REM  Keep this repo OUTSIDE C:\Windows\System32 (currently C:\Trading\tradingBot)
 REM  so no Administrator rights are needed.
 REM ============================================================
 
