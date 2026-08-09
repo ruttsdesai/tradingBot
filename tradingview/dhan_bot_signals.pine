@@ -1,0 +1,167 @@
+// =============================================================================
+//  Dhan Bot Signals — TradingView mirror of the Python intraday bot
+// =============================================================================
+//  Reproduces the live bot's decision logic so you can see the same BUY/SELL
+//  calls on a chart and trade them manually.
+//
+//  Parameters below match config.yaml exactly (NOT the library defaults):
+//      RSI_MeanReversion : RSI(14), buy < 30, sell > 70
+//      BollingerBands    : SMA(10) +/- 1.5 std        <- config, not 20/2.0
+//      MA_Crossover      : SMA(20) vs SMA(50), on the CROSS only
+//
+//  Consensus rule (same as the bot): count BUY votes vs SELL votes across the
+//  three strategies. Act only when one side outnumbers the other. A tie, or
+//  all-HOLD, does nothing. HOLD abstains — it does not block.
+//
+//  Intraday guards (same as the bot, IST):
+//      - no new BUYs after 15:00
+//      - flat by 15:10 (square-off)
+//      - skip BUYs when ATR/close < 0.15% (dead market)
+//      - 15-minute re-entry cooldown after an exit
+//
+//  HONEST NOTE: this mirrors the bot, and the bot has NOT been shown to be
+//  profitable — over the paper test to date the account is slightly down, and
+//  backtests put it below buy-and-hold. Treat these as a structured second
+//  opinion for discretionary trading, not as recommendations to follow blindly.
+//
+//  Setup: TradingView -> Pine Editor -> paste -> Add to chart. Use a 5-minute
+//  chart on an NSE symbol to match the bot.
+// =============================================================================
+
+//@version=5
+indicator("Dhan Bot Signals", overlay=true, max_labels_count=500)
+
+// ---------------------------------------------------------------- inputs ----
+grpS = "Strategy parameters (match config.yaml)"
+rsiLen    = input.int(14,  "RSI length",              group=grpS, minval=2)
+rsiBuy    = input.float(30, "RSI oversold (buy)",     group=grpS)
+rsiSell   = input.float(70, "RSI overbought (sell)",  group=grpS)
+bbLen     = input.int(10,  "Bollinger length",        group=grpS, minval=2)
+bbStd     = input.float(1.5, "Bollinger std dev",     group=grpS, step=0.1)
+maFast    = input.int(20,  "MA fast",                 group=grpS, minval=1)
+maSlow    = input.int(50,  "MA slow",                 group=grpS, minval=2)
+
+grpR = "Intraday rules"
+useSession   = input.bool(true, "Apply intraday time rules (IST)", group=grpR)
+stopBuyHour  = input.int(15, "Stop new BUYs at hour",  group=grpR, minval=0, maxval=23)
+stopBuyMin   = input.int(0,  "...and minute",          group=grpR, minval=0, maxval=59)
+sqOffHour    = input.int(15, "Square-off hour",        group=grpR, minval=0, maxval=23)
+sqOffMin     = input.int(10, "...and minute",          group=grpR, minval=0, maxval=59)
+useVolFilter = input.bool(true, "Volatility filter",   group=grpR)
+minVolPct    = input.float(0.15, "Min ATR/close %",    group=grpR, step=0.01)
+atrLen       = input.int(14, "ATR length",             group=grpR, minval=1)
+cooldownMin  = input.int(15, "Re-entry cooldown (min)",group=grpR, minval=0)
+
+grpV = "Display"
+showBands  = input.bool(true,  "Show Bollinger bands", group=grpV)
+showMAs    = input.bool(true,  "Show moving averages", group=grpV)
+showVotes  = input.bool(true,  "Show vote table",      group=grpV)
+showBg     = input.bool(false, "Shade consensus background", group=grpV)
+
+// ------------------------------------------------------------ indicators ----
+rsi   = ta.rsi(close, rsiLen)
+basis = ta.sma(close, bbLen)
+dev   = bbStd * ta.stdev(close, bbLen)
+upper = basis + dev
+lower = basis - dev
+fast  = ta.sma(close, maFast)
+slow  = ta.sma(close, maSlow)
+atr   = ta.atr(atrLen)
+volPct = close > 0 ? atr / close * 100.0 : 0.0
+
+// ------------------------------------------------------- strategy signals ----
+// RSI mean reversion: threshold levels (matches Python: rsi < 30 / rsi > 70)
+rsiBuySig  = rsi < rsiBuy
+rsiSellSig = rsi > rsiSell
+
+// Bollinger: price at/through a band (matches Python: close <= lower / >= upper)
+bbBuySig  = close <= lower
+bbSellSig = close >= upper
+
+// MA crossover: the Python version fires ONLY on the cross bar, not while
+// fast simply sits above slow. ta.crossover/under reproduces that exactly.
+maBuySig  = ta.crossover(fast, slow)
+maSellSig = ta.crossunder(fast, slow)
+
+// ------------------------------------------------------------- consensus ----
+buyVotes  = (rsiBuySig ? 1 : 0)  + (bbBuySig ? 1 : 0)  + (maBuySig ? 1 : 0)
+sellVotes = (rsiSellSig ? 1 : 0) + (bbSellSig ? 1 : 0) + (maSellSig ? 1 : 0)
+
+consensusBuy  = buyVotes > sellVotes
+consensusSell = sellVotes > buyVotes
+
+// ---------------------------------------------------------- intraday gate ----
+// Chart time is exchange time; for NSE symbols that is already IST.
+nowMins    = hour * 60 + minute
+stopBuyAt  = stopBuyHour * 60 + stopBuyMin
+sqOffAt    = sqOffHour * 60 + sqOffMin
+
+pastStopBuy = useSession and nowMins >= stopBuyAt
+atSquareOff = useSession and nowMins >= sqOffAt
+lowVol      = useVolFilter and volPct < minVolPct
+
+// Track a notional position so cooldown + square-off can be shown honestly.
+var bool inPos       = false
+var int  lastExitBar = na
+
+barsCooldown = cooldownMin / math.max(timeframe.in_seconds() / 60, 1)
+inCooldown   = not na(lastExitBar) and (bar_index - lastExitBar) < barsCooldown
+
+// A BUY is actionable only if every gate the bot applies also passes.
+buySignal  = consensusBuy and not inPos and not pastStopBuy and not lowVol and not inCooldown
+sellSignal = (consensusSell and inPos) or (atSquareOff and inPos)
+
+if buySignal
+    inPos := true
+if sellSignal
+    inPos := false
+    lastExitBar := bar_index
+
+// ------------------------------------------------------------------ plots ----
+plot(showMAs   ? fast  : na, "MA fast",  color=color.new(color.aqua, 0),   linewidth=1)
+plot(showMAs   ? slow  : na, "MA slow",  color=color.new(color.orange, 0), linewidth=1)
+pu = plot(showBands ? upper : na, "BB upper", color=color.new(color.gray, 50))
+pl = plot(showBands ? lower : na, "BB lower", color=color.new(color.gray, 50))
+fill(pu, pl, color=color.new(color.gray, 92))
+
+plotshape(buySignal,  title="BUY",  style=shape.labelup,   location=location.belowbar,
+          color=color.new(color.green, 0), textcolor=color.white, text="BUY",  size=size.small)
+plotshape(sellSignal, title="SELL", style=shape.labeldown, location=location.abovebar,
+          color=color.new(color.red, 0),   textcolor=color.white, text="SELL", size=size.small)
+
+// Signals the bot would SKIP — useful for understanding why nothing fired.
+blocked = consensusBuy and not inPos and (pastStopBuy or lowVol or inCooldown)
+plotshape(blocked, title="BUY blocked", style=shape.xcross, location=location.belowbar,
+          color=color.new(color.gray, 30), size=size.tiny)
+
+bgcolor(showBg and consensusBuy  ? color.new(color.green, 90) : na)
+bgcolor(showBg and consensusSell ? color.new(color.red,   90) : na)
+
+// ------------------------------------------------------------ vote table ----
+if showVotes and barstate.islast
+    var table t = table.new(position.top_right, 2, 7, border_width=1)
+    f_row(r, k, v, col) =>
+        table.cell(t, 0, r, k, text_color=color.gray, text_size=size.small,
+                   text_halign=text.align_left)
+        table.cell(t, 1, r, v, text_color=col, text_size=size.small,
+                   text_halign=text.align_right)
+    sTxt(b, s) => b ? "BUY" : s ? "SELL" : "HOLD"
+    sCol(b, s) => b ? color.green : s ? color.red : color.gray
+
+    f_row(0, "RSI " + str.tostring(rsi, "#.0"),  sTxt(rsiBuySig, rsiSellSig), sCol(rsiBuySig, rsiSellSig))
+    f_row(1, "Bollinger",                        sTxt(bbBuySig,  bbSellSig),  sCol(bbBuySig,  bbSellSig))
+    f_row(2, "MA cross",                         sTxt(maBuySig,  maSellSig),  sCol(maBuySig,  maSellSig))
+    f_row(3, "Consensus",
+          consensusBuy ? "BUY " + str.tostring(buyVotes) + "/3"
+          : consensusSell ? "SELL " + str.tostring(sellVotes) + "/3" : "none",
+          consensusBuy ? color.green : consensusSell ? color.red : color.gray)
+    f_row(4, "ATR/close", str.tostring(volPct, "#.00") + "%",
+          lowVol ? color.red : color.green)
+    f_row(5, "Gate",
+          pastStopBuy ? "past 15:00" : inCooldown ? "cooldown" : lowVol ? "low vol" : "open",
+          (pastStopBuy or inCooldown or lowVol) ? color.orange : color.green)
+    f_row(6, "Position", inPos ? "LONG" : "flat", inPos ? color.green : color.gray)
+
+// ----------------------------------------------------------------- alerts ----
+alertcondition(buySignal,  "Bot BUY",  "Dhan bot consensus BUY on {{ticker}} at {{close}}")
+alertcondition(sellSignal, "Bot SELL", "Dhan bot consensus SELL on {{ticker}} at {{close}}")
