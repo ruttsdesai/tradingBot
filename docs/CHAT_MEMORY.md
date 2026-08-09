@@ -514,6 +514,41 @@ but t<=0.62, also noise. VWAP, the one I flagged as most plausible, showed nothi
 - **USER MUST `git pull` BEFORE THE NEXT SESSION** to get the trail fix, then re-run. Tue 04 Aug is the
   first genuine test of replace_trail_0.8 in live paper.
 
+**2026-08-07 — FULL WEEK OF THE NEW EXIT POLICY. IT IS NOT WORKING. (9 logs analysed)**
+- **Trail fix CONFIRMED live from 08-04**: implied trail width exactly 0.800% on every trigger
+  (08-03 was the buggy ATR day at 0.29-0.57%). So 08-04..08-07 are 4 VALID days of replace_trail_0.8.
+
+| day | status | net | equity | trades | trail | timeX | sqoff |
+|---|---|---|---|---|---|---|---|
+| 08-03 | BUGGY ATR | -374.02 | 100,391.88 | 26 | 11 | 2 | 0 |
+| 08-04 | valid | -326.84 | 100,065.03 | 16 | 3 | 4 | 1 |
+| 08-05 | valid | -109.92 | 99,955.11 | 18 | 1 | 8 | 0 |
+| 08-06 | valid | +55.06 | 100,010.18 | 12 | 0 | 5 | 1 |
+| 08-07 | valid | -410.28 | 99,599.91 | 24 | 4 | 4 | 4 |
+
+- **4 valid days: -Rs791.98 (-0.79%). 3 of 4 negative.** Week incl. buggy day: -Rs1,166.
+- **ACCOUNT IS NOW UNDERWATER SINCE INCEPTION: Rs 99,599.91 vs Rs 100,000 start (-0.40%);
+  -1.16% from the 2026-07-31 peak of Rs 100,765.89.**
+- **NOT statistically significant**: mean -Rs198/day, prior daily stdev Rs309 => SE over 4 days Rs154,
+  **t = -1.28**. Cannot conclude the policy is proven bad on 4 days. But see the mechanism finding,
+  which does NOT depend on sample size:
+- **MECHANISM IS BROKEN — the trailing stop rarely gets to act.** Exits on valid days:
+  **TIME-EXIT 21, TRAILING-STOP 8, SQUARE-OFF 6** out of 35 BUY fills. Every time-exit fired at
+  120-121m. Reason: the trail only arms once price exceeds entry (`high > entry` in check_sell), and
+  these names rarely run +0.8% intraday (avg move ~0.3%). So winners seldom trigger it, and **losers
+  have NO exit at all** — the 5% stop is unreachable and strategy sells are now disabled — they simply
+  bleed for 120 minutes then time-exit. Removing strategy sells removed the only thing that was
+  actually closing positions; the 120-min time-exit became the default exit.
+- Time-exit P&L was a coin flip (11 negative / 10 positive, -1.18% to +0.46%) — i.e. exits are now
+  effectively random with respect to price.
+- **WHY THE LAB DIDN'T TRANSFER:** lab ran ONE strategy per ticker at 95% allocation; live runs a
+  3-way CONSENSUS at 16% across 5 tickers, so entries are rarer and differently timed. The lab's
+  +1.33% did not survive that difference.
+- **OPTIONS (user decision pending):** (a) keep collecting ~2-3 weeks for significance; (b) revert
+  `disable_strategy_sells: false` (one config line) back to the old policy; (c) fix the asymmetry —
+  add a REACHABLE stop-loss (~1%) so losers are cut, since currently only winners have an exit path.
+  Recommend (c) tested in the lab first, or (b) if the user wants to stop the bleeding now.
+
 **Security note:** user has repeatedly pasted Dhan JWT access tokens into chat. They expire in 24h;
 always tell them to regenerate rather than reuse, tokens go only in git-ignored `.env`, never commit
 `.env`. Paper mode needs no credentials at all.
