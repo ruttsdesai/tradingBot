@@ -566,6 +566,28 @@ but t<=0.62, also noise. VWAP, the one I flagged as most plausible, showed nothi
   promising unexplored repair if the user later wants to revisit the winners-run idea. Would need
   lab testing first.
 
+**2026-08-07 — AGREED TEST PLAN (pre-registered; do NOT move the goalposts later).**
+- User runs the REVERTED config for **~10 more sessions**, sending logs/state in ~2 weeks.
+- **NO config changes during the test.** Any change resets the sample and the count restarts.
+- The 3 existing days on this exact config (07-27 +183.81, 07-29 +127.51, 07-30 +215.17) **POOL**
+  with the new data => target n = 13.
+- Power math (daily stdev Rs309): n=8 detects Rs218/day; **n=13 detects Rs171/day**; n=18 detects
+  Rs145/day. n=13 is matched to the best observed rate (+Rs175/day), which is why 2 weeks is the target.
+- **DECISION RULE (agreed in advance):**
+  - mean > 0 AND **t > 2** => edge is real. Next step: scale POSITION SIZE (see cost math below).
+  - **t < -2** => edge is negative. Stop.
+  - **|t| < 2** => inconclusive => the edge is at best ~Rs100/day, i.e. too small/fragile to be worth
+    scaling. Treat as a real answer, NOT a reason to keep extending the test.
+- **COST INSIGHT for the scale-up step (computed 2026-08-07):** Dhan brokerage is min(Rs20, 0.03%)
+  PER ORDER, so it CAPS above Rs66,667/position. Round-trip cost falls from **0.106% at Rs16,000
+  positions to 0.059% at Rs200,000 — a 45% reduction in cost drag from size alone** (STT/GST/stamp
+  stay proportional; brokerage stops growing). Since the avg winning move is only ~0.3%, this is the
+  single highest-value change available IF the edge is confirmed. Do NOT scale before confirming —
+  size multiplies a negative edge just as fast (cf. the long/short test: +7.8% -> -4.1%).
+- Levers ranked for the user: (1) bigger positions = better cost %, the only lever that improves
+  economics rather than just scaling rupees; (2) more capital = linear; (3) more trades/tickers =
+  tested, worse; (4) leverage = last, can reach zero.
+
 **Security note:** user has repeatedly pasted Dhan JWT access tokens into chat. They expire in 24h;
 always tell them to regenerate rather than reuse, tokens go only in git-ignored `.env`, never commit
 `.env`. Paper mode needs no credentials at all.
