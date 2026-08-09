@@ -20,12 +20,27 @@ you can see the same BUY/SELL calls and trade them by hand.
 
 ## What you'll see
 
+- **LIVE ACTION PANEL** (top right) — the first row is the answer to "what do I
+  do right now?": `BUY NOW`, `SELL NOW`, `HOLDING`, `BUY BLOCKED`, or `WAIT`,
+  colour-coded. Below it: each strategy's vote, the consensus, how many bars ago
+  the last signal fired, position state, ATR/close, which gate is blocking, and
+  the timestamp of the bar being read.
 - **Green BUY / red SELL labels** — where the bot's consensus rule fires
 - **Grey ✕** — a BUY the bot would have *skipped* (past 15:00, dead market, or
   inside the re-entry cooldown). Useful for understanding why nothing fired.
-- **Vote table** (top right) — each strategy's current call, the consensus, live
-  ATR/close, which gate is blocking, and whether a position is open
 - **Bollinger bands + the two moving averages**
+
+### "The panel doesn't move when I scroll the chart"
+
+That is correct behaviour. The panel is anchored to the top-right of the
+*viewport*, not to a bar, and it always reports the **latest** candle — that is
+what makes it a live readout rather than a history browser. Scrolling back to
+look at old bars does not change it.
+
+If it isn't changing at all, check the **Bar time** row. NSE trades 09:15–15:30
+IST on weekdays; outside those hours the last candle is frozen and there is
+nothing new to compute. Crypto charts run 24/7, so that row should always be
+recent.
 
 ## It matches the bot, not the textbook
 

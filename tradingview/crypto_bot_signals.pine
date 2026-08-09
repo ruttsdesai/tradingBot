@@ -123,13 +123,22 @@ trailHit  = inPos and useTrail and not na(trailStop) and close <= trailStop
 buySignal  = consensusBuy and not inPos and not lowVol and not inCooldown
 sellSignal = inPos and (consensusSell or trailHit)
 
+// Remember the most recent actionable signal so the panel can show what the
+// last call was and how stale it is.
+var string lastSig    = "none"
+var int    lastSigBar = na
+
 if buySignal
     inPos := true
     peak  := close
+    lastSig := "BUY"
+    lastSigBar := bar_index
 if sellSignal
     inPos   := false
     exitBar := bar_index
     peak    := na
+    lastSig := trailHit ? "TRAIL" : "SELL"
+    lastSigBar := bar_index
 
 // ------------------------------------------------------------------ plots ----
 plot(showMAs ? maF : na, "MA fast", color = color.new(color.aqua, 0))
@@ -150,37 +159,66 @@ plotshape(consensusBuy and not inPos and (lowVol or inCooldown), title = "BUY bl
      style = shape.xcross, location = location.belowbar,
      color = color.new(color.gray, 30), size = size.tiny)
 
-// ------------------------------------------------------------ vote table ----
-var table voteTable = table.new(position.top_right, 2, 8, border_width = 1)
+// ------------------------------------------------------- LIVE ACTION PANEL ----
+// Anchored to the top-right of the viewport, so it stays put while you scroll
+// and always reports the LATEST bar — that is the live reading. Crypto trades
+// 24/7 so this updates continuously; on an equity chart it freezes outside
+// market hours, which is normal and not a fault.
+var table panel = table.new(position.top_right, 2, 10, border_width = 1,
+     frame_color = color.gray, frame_width = 1)
+
+blockedNow = consensusBuy and not inPos and (lowVol or inCooldown)
+
+actionTxt = buySignal   ? "BUY NOW"
+     : trailHit         ? "TRAIL STOP - EXIT"
+     : sellSignal       ? "SELL NOW"
+     : inPos            ? "HOLDING"
+     : blockedNow       ? "BUY BLOCKED"
+     : consensusSell    ? "SELL signal (no position)"
+     :                    "WAIT"
+
+actionCol = buySignal ? color.green : (sellSignal or trailHit) ? color.red
+     : inPos ? color.teal : blockedNow ? color.orange : color.gray
+
+barsAgo = na(lastSigBar) ? na : bar_index - lastSigBar
+lastTxt = lastSig == "none" ? "none yet"
+     : lastSig + " " + (barsAgo == 0 ? "this bar" : str.tostring(barsAgo) + " bars ago")
 
 if showVotes and barstate.islast
-    table.cell(voteTable, 0, 0, "RSI " + str.tostring(rsi, "#.0"), text_color = color.gray, text_size = size.small, text_halign = text.align_left)
-    table.cell(voteTable, 1, 0, sigText(rsiBuySig, rsiSellSig), text_color = sigColor(rsiBuySig, rsiSellSig), text_size = size.small, text_halign = text.align_right)
+    table.cell(panel, 0, 0, "ACTION", text_color = color.white, bgcolor = actionCol,
+         text_size = size.normal, text_halign = text.align_left)
+    table.cell(panel, 1, 0, actionTxt, text_color = color.white, bgcolor = actionCol,
+         text_size = size.normal, text_halign = text.align_right)
 
-    table.cell(voteTable, 0, 1, "Bollinger", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
-    table.cell(voteTable, 1, 1, sigText(bbBuySig, bbSellSig), text_color = sigColor(bbBuySig, bbSellSig), text_size = size.small, text_halign = text.align_right)
+    table.cell(panel, 0, 1, "RSI " + str.tostring(rsi, "#.0"), text_color = color.gray, text_size = size.small, text_halign = text.align_left)
+    table.cell(panel, 1, 1, sigText(rsiBuySig, rsiSellSig), text_color = sigColor(rsiBuySig, rsiSellSig), text_size = size.small, text_halign = text.align_right)
 
-    table.cell(voteTable, 0, 2, "MA cross", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
-    table.cell(voteTable, 1, 2, sigText(maBuySig, maSellSig), text_color = sigColor(maBuySig, maSellSig), text_size = size.small, text_halign = text.align_right)
+    table.cell(panel, 0, 2, "Bollinger", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
+    table.cell(panel, 1, 2, sigText(bbBuySig, bbSellSig), text_color = sigColor(bbBuySig, bbSellSig), text_size = size.small, text_halign = text.align_right)
+
+    table.cell(panel, 0, 3, "MA cross", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
+    table.cell(panel, 1, 3, sigText(maBuySig, maSellSig), text_color = sigColor(maBuySig, maSellSig), text_size = size.small, text_halign = text.align_right)
 
     momTxt = useMom ? sigText(momBuySig, momSellSig) : "-"
     momCol = useMom ? sigColor(momBuySig, momSellSig) : color.gray
-    table.cell(voteTable, 0, 3, useMom ? "Momentum" : "Momentum (off)", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
-    table.cell(voteTable, 1, 3, momTxt, text_color = momCol, text_size = size.small, text_halign = text.align_right)
+    table.cell(panel, 0, 4, useMom ? "Momentum" : "Momentum (off)", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
+    table.cell(panel, 1, 4, momTxt, text_color = momCol, text_size = size.small, text_halign = text.align_right)
 
-    consTxt = consensusBuy ? "BUY " + str.tostring(buyVotes) + "/" + str.tostring(nStrat) : consensusSell ? "SELL " + str.tostring(sellVotes) + "/" + str.tostring(nStrat) : "none"
-    table.cell(voteTable, 0, 4, "Consensus", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
-    table.cell(voteTable, 1, 4, consTxt, text_color = sigColor(consensusBuy, consensusSell), text_size = size.small, text_halign = text.align_right)
+    consTxt = consensusBuy ? "BUY " + str.tostring(buyVotes) + "/" + str.tostring(nStrat) : consensusSell ? "SELL " + str.tostring(sellVotes) + "/" + str.tostring(nStrat) : "no majority"
+    table.cell(panel, 0, 5, "Consensus", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
+    table.cell(panel, 1, 5, consTxt, text_color = sigColor(consensusBuy, consensusSell), text_size = size.small, text_halign = text.align_right)
 
-    table.cell(voteTable, 0, 5, "ATR/close", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
-    table.cell(voteTable, 1, 5, str.tostring(volPct, "#.00") + "%", text_color = lowVol ? color.red : color.green, text_size = size.small, text_halign = text.align_right)
+    table.cell(panel, 0, 6, "Last signal", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
+    table.cell(panel, 1, 6, lastTxt, text_color = lastSig == "BUY" ? color.green : lastSig == "none" ? color.gray : color.red, text_size = size.small, text_halign = text.align_right)
 
-    table.cell(voteTable, 0, 6, "Position", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
-    table.cell(voteTable, 1, 6, inPos ? "LONG" : "flat", text_color = inPos ? color.green : color.gray, text_size = size.small, text_halign = text.align_right)
+    table.cell(panel, 0, 7, "Position", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
+    table.cell(panel, 1, 7, inPos ? "LONG" : "flat", text_color = inPos ? color.green : color.gray, text_size = size.small, text_halign = text.align_right)
 
-    trailTxt = not na(trailStop) ? str.tostring(trailStop, format.mintick) : "-"
-    table.cell(voteTable, 0, 7, "Trail stop", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
-    table.cell(voteTable, 1, 7, trailTxt, text_color = color.red, text_size = size.small, text_halign = text.align_right)
+    table.cell(panel, 0, 8, "Trail stop", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
+    table.cell(panel, 1, 8, not na(trailStop) ? str.tostring(trailStop, format.mintick) : "-", text_color = color.red, text_size = size.small, text_halign = text.align_right)
+
+    table.cell(panel, 0, 9, "ATR/close", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
+    table.cell(panel, 1, 9, str.tostring(volPct, "#.00") + "%", text_color = lowVol ? color.red : color.green, text_size = size.small, text_halign = text.align_right)
 
 // ----------------------------------------------------------------- alerts ----
 alertcondition(buySignal,  "Crypto BUY",  "Consensus BUY on {{ticker}} at {{close}}")
