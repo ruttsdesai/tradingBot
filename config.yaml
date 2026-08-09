@@ -120,8 +120,15 @@ dhan_live_trading:
   # baseline +0.41%, 13/15 combos profitable vs 9/15, Sharpe 0.86 vs 0.44, and
   # was the ONLY variant still positive at doubled costs. Set both to false to
   # revert to the old behaviour (strategy sells, no trailing stop).
-  disable_strategy_sells: true   # ignore strategy SELL signals; the trailing stop decides the exit
-  trailing_stop_enabled: true    # MUST be on when disable_strategy_sells is true, or nothing exits early
+  # REVERTED 2026-08-07 to the configuration that ran 07-27..07-30 (+Rs526 over
+  # 3 days, net of costs). The trailing-stop-replaces-sells policy lost Rs792
+  # over 4 valid days (08-04..08-07). Its mechanism failed live: the trail only
+  # arms once price exceeds entry, and these names rarely run +0.8% intraday, so
+  # winners seldom triggered it while losers had NO exit at all (5% stop is
+  # unreachable, strategy sells were off) and just bled to the 120-min time-exit.
+  # Exits went TIME-EXIT 21 / TRAILING-STOP 8 / SQUARE-OFF 6 across 35 fills.
+  disable_strategy_sells: false  # strategy SELL signals close positions again
+  trailing_stop_enabled: false   # off — matches the 07-27..07-30 config exactly
   trailing_stop_pct: 0.008       # 0.8% below peak — reachable intraday (the old 8% never once fired)
   trailing_stop_atr_mult: 0.0    # >0 uses ATR*mult below peak instead of the pct
   poll_interval_seconds: 60      # seconds between evaluation cycles

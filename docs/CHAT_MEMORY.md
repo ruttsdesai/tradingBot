@@ -549,6 +549,23 @@ but t<=0.62, also noise. VWAP, the one I flagged as most plausible, showed nothi
   add a REACHABLE stop-loss (~1%) so losers are cut, since currently only winners have an exit path.
   Recommend (c) tested in the lab first, or (b) if the user wants to stop the bleeding now.
 
+**2026-08-07 — USER CHOSE (b): REVERTED to the 07-27..07-30 configuration.**
+- `config.yaml` dhan_live_trading: `disable_strategy_sells: false`, `trailing_stop_enabled: false`.
+  Everything else unchanged (15m cooldown, 5 tickers, 16%/6 positions, 5m, 120m time-exit, costs on).
+  This is EXACTLY the config that ran 07-27/29/30 for +Rs526 over 3 days — chosen deliberately so the
+  next sessions are directly comparable to those days rather than forming a third configuration.
+- Startup banner no longer prints an Exit policy / Trailing line, which is the visual confirmation
+  the revert is live.
+- **Honest scoreboard (both net of costs, neither statistically significant):**
+  OLD +Rs526 over 3 days (+Rs175/day) vs NEW -Rs792 over 4 days (-Rs198/day).
+- **Standing caveat to repeat if the user gets optimistic:** those 3 old-policy days were never proof
+  either — 3 consecutive positive days occurs ~12.5% of the time by chance, and the prior daily stdev
+  is ~Rs309. The reverted config is the better BET on the evidence, not a validated winner.
+- Account since inception: Rs 99,599.91 vs Rs 100,000 start (-0.40%).
+- NOT done (deliberately): option (c), a reachable ~1% stop-loss to cut losers. Still the most
+  promising unexplored repair if the user later wants to revisit the winners-run idea. Would need
+  lab testing first.
+
 **Security note:** user has repeatedly pasted Dhan JWT access tokens into chat. They expire in 24h;
 always tell them to regenerate rather than reuse, tokens go only in git-ignored `.env`, never commit
 `.env`. Paper mode needs no credentials at all.
