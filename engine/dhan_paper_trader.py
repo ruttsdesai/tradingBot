@@ -40,9 +40,41 @@ class DhanPaperTrader(DhanLiveTrader):
     # which is exactly how the churn problem stayed hidden for days.
     COST_PCT_PER_SIDE = 0.0005
 
+    # --- Dhan intraday (MIS) charges, for the size-aware cost model ---------
+    # Brokerage is min(Rs20, 0.03%) PER ORDER, so it CAPS above ~Rs66,667 of
+    # notional and stops scaling with size. Everything else stays proportional.
+    # Net effect: round-trip cost falls from ~0.106% at Rs16k positions to
+    # ~0.059% at Rs200k — a 45% cut in drag from position size alone. The flat
+    # COST_PCT_PER_SIDE above happens to be accurate at the CURRENT Rs16k size
+    # (0.053%/side), which is why it stays the default: switching models
+    # mid-experiment would break comparability with the pooled 07-27..07-30 days.
+    BROKERAGE_PCT = 0.0003        # 0.03% per order...
+    BROKERAGE_CAP = 20.0          # ...capped at Rs20 per order
+    STT_PCT_SELL = 0.00025        # 0.025%, sell side only
+    EXCHANGE_PCT = 0.0000297      # both sides
+    GST_PCT = 0.18                # on brokerage + exchange charges
+    STAMP_PCT_BUY = 0.00003       # 0.003%, buy side only
+
+    def _side_cost(self, notional: float, side: str) -> float:
+        """Cost in rupees for one leg of `notional` value.
+
+        Uses the real Dhan charge stack when `size_aware_costs` is on, else the
+        flat COST_PCT_PER_SIDE. Returns rupees, not a percentage, because the
+        brokerage cap makes the percentage size-dependent.
+        """
+        if not getattr(self, "_size_aware_costs", False):
+            return notional * self.COST_PCT_PER_SIDE
+        brokerage = min(self.BROKERAGE_CAP, notional * self.BROKERAGE_PCT)
+        exchange = notional * self.EXCHANGE_PCT
+        gst = (brokerage + exchange) * self.GST_PCT
+        extra = (notional * self.STT_PCT_SELL if side == "SELL"
+                 else notional * self.STAMP_PCT_BUY)
+        return brokerage + exchange + gst + extra
+
     def __init__(self, *args, state_file: str = "", **kwargs):
         super().__init__(*args, **kwargs)
         self._mode_label = "PAPER"
+        self._size_aware_costs = getattr(self.config, "size_aware_costs", False)
         self._state_file = state_file or _DEFAULT_STATE_FILE
         self._last_price: dict[str, float] = {}      # base symbol -> latest evaluated price
         self._paper_cash: float = self.config.initial_capital
@@ -135,16 +167,22 @@ class DhanPaperTrader(DhanLiveTrader):
         qty = int(quantity)
         if qty <= 0:
             return None
-        # Charge realistic costs so paper P&L is NET, not gross.
-        unit_cost = price * (1.0 + self.COST_PCT_PER_SIDE)
-        cost = qty * unit_cost
-        if cost > self._paper_cash:
-            qty = int(self._paper_cash // unit_cost)
+        # Charge realistic costs so paper P&L is NET, not gross. The fee depends
+        # on the ORDER's notional (brokerage caps), so compute it from the whole
+        # order and fold it back into a per-share basis.
+        def _buy_total(q):
+            notional = q * price
+            return notional + self._side_cost(notional, "BUY")
+
+        if _buy_total(qty) > self._paper_cash:
+            while qty > 0 and _buy_total(qty) > self._paper_cash:
+                qty -= 1
             if qty <= 0:
                 print(f"  [PAPER] BUY skipped for {ticker}: Rs {price:,.2f}/share exceeds "
                       f"cash Rs {self._paper_cash:,.2f}")
                 return None
-            cost = qty * unit_cost
+        cost = _buy_total(qty)
+        unit_cost = cost / qty
 
         self._paper_cash -= cost
         # Store the cost-inclusive unit price as the basis, so a later sell's
@@ -182,7 +220,8 @@ class DhanPaperTrader(DhanLiveTrader):
 
         # Net of costs on the way out too; pos["avg"] already carries the
         # entry-side cost, so pnl here is a true net round-trip figure.
-        proceeds = qty * price * (1.0 - self.COST_PCT_PER_SIDE)
+        gross = qty * price
+        proceeds = gross - self._side_cost(gross, "SELL")
         pnl = proceeds - (pos["avg"] * qty)
         self._paper_cash += proceeds
         pos["qty"] -= qty

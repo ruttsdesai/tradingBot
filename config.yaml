@@ -131,6 +131,13 @@ dhan_live_trading:
   trailing_stop_enabled: false   # off — matches the 07-27..07-30 config exactly
   trailing_stop_pct: 0.008       # 0.8% below peak — reachable intraday (the old 8% never once fired)
   trailing_stop_atr_mult: 0.0    # >0 uses ATR*mult below peak instead of the pct
+  # Paper cost model. false = flat 0.05%/side (accurate at the current Rs16k
+  # positions, and what the pooled 07-27..07-30 days were measured under, so it
+  # stays the default while the 2-week test runs). true = model Dhan's real
+  # charge stack, where brokerage caps at Rs20/order — turn this ON before
+  # testing larger positions, or paper will understate the size benefit
+  # (round trip 0.106% at Rs16k vs 0.059% at Rs200k).
+  size_aware_costs: false
   poll_interval_seconds: 60      # seconds between evaluation cycles
   intraday: true                 # true = use intraday bars (5m/15m) for continuous all-day trading
   intraday_interval: "5m"        # candle interval for intraday: 1m, 5m, 15m, 30m, 1h

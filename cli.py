@@ -1810,6 +1810,7 @@ def dhan_live(ticker, strategies, all_strategies, once, live_mode, paper_mode, c
         trailing_stop_enabled=dhan_cfg.get("trailing_stop_enabled", False),
         trailing_stop_pct=dhan_cfg.get("trailing_stop_pct", 0.008),
         trailing_stop_atr_mult=dhan_cfg.get("trailing_stop_atr_mult", 0.0),
+        size_aware_costs=dhan_cfg.get("size_aware_costs", False),
         use_atr_sizing=sizing_cfg.get("use_atr_sizing", False),
         position_risk_pct=sizing_cfg.get("position_risk_pct", 0.01),
         atr_period=sizing_cfg.get("atr_period", 14),
@@ -2247,6 +2248,73 @@ def telegram_setup():
     click.echo("  [ERROR] No Telegram credentials found in .env.")
     click.echo("  Recommended (no BotFather): get api_id + api_hash from https://my.telegram.org/apps,")
     click.echo("  then add TG_API_ID and TG_API_HASH to your .env and re-run this command.")
+
+
+@cli.command("fill-quality")
+@click.option("--file", "path", default="", help="Path to fill_quality.csv")
+def fill_quality(path):
+    """Measure the paper-to-live execution gap (slippage).
+
+    Paper fills at the last evaluated close, so its slippage is 0 by
+    construction — this only means something in LIVE mode. It is the
+    measurement that decides whether a paper edge survives real execution:
+    roughly 0.02% of adverse slippage per round trip is enough to erase the
+    best edge observed so far, so this is the number to watch when going live.
+    """
+    import csv
+    from collections import defaultdict
+
+    path = path or os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "state", "fill_quality.csv")
+    if not os.path.exists(path):
+        click.echo(f"No fill log yet at {path}")
+        click.echo("It is written automatically once the bot fills orders.")
+        return
+
+    rows = list(csv.DictReader(open(path)))
+    if not rows:
+        click.echo("Fill log is empty.")
+        return
+
+    by_mode = defaultdict(list)
+    for r in rows:
+        try:
+            by_mode[r["mode"]].append((float(r["slippage_pct"]), float(r["notional"]),
+                                       r["side"]))
+        except (ValueError, KeyError):
+            continue
+
+    click.echo(f"\n  Fill quality — {len(rows)} fills from {path}\n")
+    click.echo(f"  {'mode':8}{'fills':>7}{'avg slip':>11}{'median':>10}"
+               f"{'worst':>10}{'cost/day*':>12}")
+    click.echo("  " + "-" * 58)
+    for mode, vals in by_mode.items():
+        slips = sorted(v[0] for v in vals)
+        avg = sum(slips) / len(slips)
+        med = slips[len(slips) // 2]
+        worst = slips[-1]
+        avg_notional = sum(v[1] for v in vals) / len(vals)
+        # 20 round trips/day = 40 fills
+        daily = avg / 100 * avg_notional * 40
+        click.echo(f"  {mode:8}{len(vals):>7}{avg:>10.4f}%{med:>9.4f}%"
+                   f"{worst:>9.4f}%{daily:>12,.0f}")
+    click.echo("\n  *estimated daily rupee drag at 20 round trips/day on the")
+    click.echo("   average observed notional. POSITIVE slippage = worse than expected.")
+
+    live = by_mode.get("LIVE") or by_mode.get("SANDBOX")
+    if live:
+        avg = sum(v[0] for v in live) / len(live)
+        click.echo()
+        if avg <= 0.01:
+            click.echo("  VERDICT: slippage is negligible — a paper edge should survive.")
+        elif avg <= 0.03:
+            click.echo("  VERDICT: modest slippage — recheck that the edge still clears it.")
+        else:
+            click.echo("  VERDICT: slippage is LARGE. A paper edge of this size would not")
+            click.echo("  survive live execution. Do not scale capital on paper results.")
+    else:
+        click.echo("\n  Only PAPER fills so far (slippage is 0 by construction).")
+        click.echo("  Numbers become meaningful once you trade live.")
 
 
 if __name__ == "__main__":

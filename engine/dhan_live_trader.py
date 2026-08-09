@@ -19,6 +19,7 @@ Setup:
     4. Run: python cli.py dhan-live --strategy macd --once
 """
 
+import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Optional
@@ -150,6 +151,10 @@ class DhanLiveTraderConfig:
     trailing_stop_enabled: bool = False
     trailing_stop_pct: float = 0.008       # 0.8% below peak — reachable intraday (8% never fires)
     trailing_stop_atr_mult: float = 0.0    # >0 uses ATR*mult below peak instead of the pct
+    # Paper only: model Dhan's real charge stack (brokerage caps at Rs20/order)
+    # instead of a flat per-side pct. Matters once positions exceed ~Rs66,667,
+    # where the cap makes larger positions materially cheaper per rupee traded.
+    size_aware_costs: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -207,6 +212,9 @@ class DhanLiveTrader:
         self._tp_orders: dict[str, str] = {}   # ticker (base) -> take-profit order_id
         self._cnc_holdings: set[str] = set()   # symbols held as CNC delivery (sell as CNC, not MIS)
         self._last_exit_time: dict[str, datetime] = {}  # base symbol -> last exit time (re-entry cooldown)
+        self._fill_log = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "state", "fill_quality.csv")
         self._init_notifier()
 
     # ------------------------------------------------------------------
@@ -1104,6 +1112,46 @@ class DhanLiveTrader:
 
         return False
 
+
+    # ------------------------------------------------------------------
+    # Fill quality — the paper-to-live gap
+    # ------------------------------------------------------------------
+
+    def _record_fill(self, base: str, side: str, qty: int,
+                     expected: float, order: dict) -> None:
+        """Log expected vs actual fill price so slippage can be measured.
+
+        Paper fills at the last evaluated close by construction, so its
+        slippage is always 0 — the number only means something in LIVE mode,
+        where the order crosses the spread and can move the book. This is the
+        single measurement that decides whether a paper edge survives real
+        execution: ~0.02% of adverse slippage is enough to erase the best
+        edge observed so far.
+
+        Sign convention: POSITIVE slippage_pct = worse than expected (paid
+        more on a buy, received less on a sell), for both sides.
+        """
+        filled = order.get("filled_avg_price")
+        if not filled or not expected or expected <= 0:
+            return
+        if side == "BUY":
+            slip = (filled - expected) / expected
+        else:
+            slip = (expected - filled) / expected
+        try:
+            os.makedirs(os.path.dirname(self._fill_log), exist_ok=True)
+            new = not os.path.exists(self._fill_log)
+            with open(self._fill_log, "a", encoding="utf-8") as f:
+                if new:
+                    f.write("ts,mode,symbol,side,qty,expected,filled,"
+                            "slippage_pct,notional\n")
+                f.write(f"{datetime.now().isoformat(timespec='seconds')},"
+                        f"{getattr(self, '_mode_label', 'LIVE')},{base},{side},"
+                        f"{qty},{expected:.4f},{filled:.4f},{slip*100:.5f},"
+                        f"{qty*filled:.2f}\n")
+        except Exception:
+            pass  # never let logging break trading
+
     def _in_reentry_cooldown(self, base: str) -> bool:
         """True if `base` was exited less than reentry_cooldown_minutes ago."""
         cd = self.config.reentry_cooldown_minutes
@@ -1267,6 +1315,7 @@ class DhanLiveTrader:
                             # Debit cash so total_value stays invariant across
                             # the fill (otherwise the daily-loss limiter mis-fires).
                             entry_price = order.get("filled_avg_price") or price
+                            self._record_fill(base, "BUY", order["qty"], price, order)
                             portfolio.current_cash -= order["qty"] * entry_price
                             portfolio.positions[base] = Position(
                                 ticker=base,
@@ -1305,6 +1354,7 @@ class DhanLiveTrader:
                         )
                         # Credit cash and remove from portfolio (keeps
                         # total_value invariant across the fill)
+                        self._record_fill(base, "SELL", order["qty"], price, order)
                         portfolio.current_cash += order["qty"] * (exit_price or price)
                         del portfolio.positions[base]
                         self._last_exit_time[base] = datetime.now()
@@ -1323,6 +1373,7 @@ class DhanLiveTrader:
                     order = self.submit_sell(ticker, pos.quantity)
                     if order:
                         print(f"  [DHAN] STOP-LOSS {ticker}: {risk.reason}")
+                        self._record_fill(base, "SELL", order["qty"], price, order)
                         portfolio.current_cash += order["qty"] * (order.get("filled_avg_price") or price)
                         del portfolio.positions[base]
                         self._last_exit_time[base] = datetime.now()
@@ -1336,6 +1387,7 @@ class DhanLiveTrader:
                     order = self.submit_sell(ticker, pos.quantity)
                     if order:
                         print(f"  [DHAN] TAKE-PROFIT {ticker}: {risk.reason}")
+                        self._record_fill(base, "SELL", order["qty"], price, order)
                         portfolio.current_cash += order["qty"] * (order.get("filled_avg_price") or price)
                         del portfolio.positions[base]
                         self._last_exit_time[base] = datetime.now()
@@ -1349,6 +1401,7 @@ class DhanLiveTrader:
                     order = self.submit_sell(ticker, pos.quantity)
                     if order:
                         print(f"  [DHAN] TRAILING-STOP {ticker}: {risk.reason}")
+                        self._record_fill(base, "SELL", order["qty"], price, order)
                         portfolio.current_cash += order["qty"] * (order.get("filled_avg_price") or price)
                         del portfolio.positions[base]
                         self._last_exit_time[base] = datetime.now()
@@ -1377,6 +1430,7 @@ class DhanLiveTrader:
                             pnl = (order.get("filled_avg_price", 0) - pos.avg_entry_price) * pos.quantity if order.get("filled_avg_price") and pos.avg_entry_price > 0 else None
                             print(f"  [DHAN] TIME-EXIT {ticker}: Held {hold_minutes:.0f}m, "
                                   f"P&L {pnl_pct:+.2%} < {self.config.min_profit_threshold_pct:.1%} threshold")
+                            self._record_fill(base, "SELL", order["qty"], price, order)
                             portfolio.current_cash += order["qty"] * (order.get("filled_avg_price") or price)
                             del portfolio.positions[base]
                             self._last_exit_time[base] = datetime.now()
