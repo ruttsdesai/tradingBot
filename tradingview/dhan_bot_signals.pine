@@ -28,60 +28,69 @@
 //  chart on an NSE symbol to match the bot.
 // =============================================================================
 
-//@version=5
-indicator("Dhan Bot Signals", overlay=true, max_labels_count=500)
+//@version=6
+indicator("Dhan Bot Signals", overlay = true, max_labels_count = 500)
 
 // ---------------------------------------------------------------- inputs ----
 grpS = "Strategy parameters (match config.yaml)"
-rsiLen    = input.int(14,  "RSI length",              group=grpS, minval=2)
-rsiBuy    = input.float(30, "RSI oversold (buy)",     group=grpS)
-rsiSell   = input.float(70, "RSI overbought (sell)",  group=grpS)
-bbLen     = input.int(10,  "Bollinger length",        group=grpS, minval=2)
-bbStd     = input.float(1.5, "Bollinger std dev",     group=grpS, step=0.1)
-maFast    = input.int(20,  "MA fast",                 group=grpS, minval=1)
-maSlow    = input.int(50,  "MA slow",                 group=grpS, minval=2)
+rsiLen  = input.int(14,    "RSI length",             group = grpS, minval = 2)
+rsiBuy  = input.float(30,  "RSI oversold (buy)",     group = grpS)
+rsiSell = input.float(70,  "RSI overbought (sell)",  group = grpS)
+bbLen   = input.int(10,    "Bollinger length",       group = grpS, minval = 2)
+bbStd   = input.float(1.5, "Bollinger std dev",      group = grpS, step = 0.1)
+maFast  = input.int(20,    "MA fast",                group = grpS, minval = 1)
+maSlow  = input.int(50,    "MA slow",                group = grpS, minval = 2)
 
 grpR = "Intraday rules"
-useSession   = input.bool(true, "Apply intraday time rules (IST)", group=grpR)
-stopBuyHour  = input.int(15, "Stop new BUYs at hour",  group=grpR, minval=0, maxval=23)
-stopBuyMin   = input.int(0,  "...and minute",          group=grpR, minval=0, maxval=59)
-sqOffHour    = input.int(15, "Square-off hour",        group=grpR, minval=0, maxval=23)
-sqOffMin     = input.int(10, "...and minute",          group=grpR, minval=0, maxval=59)
-useVolFilter = input.bool(true, "Volatility filter",   group=grpR)
-minVolPct    = input.float(0.15, "Min ATR/close %",    group=grpR, step=0.01)
-atrLen       = input.int(14, "ATR length",             group=grpR, minval=1)
-cooldownMin  = input.int(15, "Re-entry cooldown (min)",group=grpR, minval=0)
+useSession   = input.bool(true, "Apply intraday time rules (IST)", group = grpR)
+stopBuyHour  = input.int(15,    "Stop new BUYs at hour", group = grpR, minval = 0, maxval = 23)
+stopBuyMin   = input.int(0,     "...and minute",         group = grpR, minval = 0, maxval = 59)
+sqOffHour    = input.int(15,    "Square-off hour",       group = grpR, minval = 0, maxval = 23)
+sqOffMin     = input.int(10,    "...and minute",         group = grpR, minval = 0, maxval = 59)
+useVolFilter = input.bool(true, "Volatility filter",     group = grpR)
+minVolPct    = input.float(0.15,"Min ATR/close %",       group = grpR, step = 0.01)
+atrLen       = input.int(14,    "ATR length",            group = grpR, minval = 1)
+cooldownMin  = input.int(15,    "Re-entry cooldown (min)", group = grpR, minval = 0)
 
 grpV = "Display"
-showBands  = input.bool(true,  "Show Bollinger bands", group=grpV)
-showMAs    = input.bool(true,  "Show moving averages", group=grpV)
-showVotes  = input.bool(true,  "Show vote table",      group=grpV)
-showBg     = input.bool(false, "Shade consensus background", group=grpV)
+showBands = input.bool(true,  "Show Bollinger bands",       group = grpV)
+showMAs   = input.bool(true,  "Show moving averages",       group = grpV)
+showVotes = input.bool(true,  "Show vote table",            group = grpV)
+showBg    = input.bool(false, "Shade consensus background", group = grpV)
+
+// ------------------------------------------------------------- functions ----
+// NOTE: Pine requires function declarations at GLOBAL scope — they cannot live
+// inside an `if` block. That mistake is what produced the earlier syntax error.
+sigText(bool b, bool s) =>
+    b ? "BUY" : s ? "SELL" : "HOLD"
+
+sigColor(bool b, bool s) =>
+    b ? color.green : s ? color.red : color.gray
 
 // ------------------------------------------------------------ indicators ----
-rsi   = ta.rsi(close, rsiLen)
-basis = ta.sma(close, bbLen)
-dev   = bbStd * ta.stdev(close, bbLen)
-upper = basis + dev
-lower = basis - dev
-fast  = ta.sma(close, maFast)
-slow  = ta.sma(close, maSlow)
-atr   = ta.atr(atrLen)
+rsi    = ta.rsi(close, rsiLen)
+basis  = ta.sma(close, bbLen)
+dev    = bbStd * ta.stdev(close, bbLen)
+upper  = basis + dev
+lower  = basis - dev
+maF    = ta.sma(close, maFast)
+maS    = ta.sma(close, maSlow)
+atr    = ta.atr(atrLen)
 volPct = close > 0 ? atr / close * 100.0 : 0.0
 
 // ------------------------------------------------------- strategy signals ----
-// RSI mean reversion: threshold levels (matches Python: rsi < 30 / rsi > 70)
+// RSI mean reversion — threshold levels (Python: rsi < 30 / rsi > 70)
 rsiBuySig  = rsi < rsiBuy
 rsiSellSig = rsi > rsiSell
 
-// Bollinger: price at/through a band (matches Python: close <= lower / >= upper)
+// Bollinger — price at/through a band (Python: close <= lower / >= upper)
 bbBuySig  = close <= lower
 bbSellSig = close >= upper
 
-// MA crossover: the Python version fires ONLY on the cross bar, not while
-// fast simply sits above slow. ta.crossover/under reproduces that exactly.
-maBuySig  = ta.crossover(fast, slow)
-maSellSig = ta.crossunder(fast, slow)
+// MA crossover — the Python version fires ONLY on the cross bar, not while
+// fast merely sits above slow. ta.crossover/crossunder reproduces that.
+maBuySig  = ta.crossover(maF, maS)
+maSellSig = ta.crossunder(maF, maS)
 
 // ------------------------------------------------------------- consensus ----
 buyVotes  = (rsiBuySig ? 1 : 0)  + (bbBuySig ? 1 : 0)  + (maBuySig ? 1 : 0)
@@ -92,24 +101,25 @@ consensusSell = sellVotes > buyVotes
 
 // ---------------------------------------------------------- intraday gate ----
 // Chart time is exchange time; for NSE symbols that is already IST.
-nowMins    = hour * 60 + minute
-stopBuyAt  = stopBuyHour * 60 + stopBuyMin
-sqOffAt    = sqOffHour * 60 + sqOffMin
+nowMins   = hour * 60 + minute
+stopBuyAt = stopBuyHour * 60 + stopBuyMin
+sqOffAt   = sqOffHour * 60 + sqOffMin
 
 pastStopBuy = useSession and nowMins >= stopBuyAt
 atSquareOff = useSession and nowMins >= sqOffAt
 lowVol      = useVolFilter and volPct < minVolPct
 
-// Track a notional position so cooldown + square-off can be shown honestly.
+// Track a notional position so cooldown + square-off behave honestly.
 var bool inPos       = false
 var int  lastExitBar = na
 
-barsCooldown = cooldownMin / math.max(timeframe.in_seconds() / 60, 1)
+barsPerMin   = math.max(timeframe.in_seconds() / 60.0, 1.0)
+barsCooldown = cooldownMin / barsPerMin
 inCooldown   = not na(lastExitBar) and (bar_index - lastExitBar) < barsCooldown
 
 // A BUY is actionable only if every gate the bot applies also passes.
 buySignal  = consensusBuy and not inPos and not pastStopBuy and not lowVol and not inCooldown
-sellSignal = (consensusSell and inPos) or (atSquareOff and inPos)
+sellSignal = inPos and (consensusSell or atSquareOff)
 
 if buySignal
     inPos := true
@@ -118,49 +128,52 @@ if sellSignal
     lastExitBar := bar_index
 
 // ------------------------------------------------------------------ plots ----
-plot(showMAs   ? fast  : na, "MA fast",  color=color.new(color.aqua, 0),   linewidth=1)
-plot(showMAs   ? slow  : na, "MA slow",  color=color.new(color.orange, 0), linewidth=1)
-pu = plot(showBands ? upper : na, "BB upper", color=color.new(color.gray, 50))
-pl = plot(showBands ? lower : na, "BB lower", color=color.new(color.gray, 50))
-fill(pu, pl, color=color.new(color.gray, 92))
+plot(showMAs ? maF : na, "MA fast", color = color.new(color.aqua, 0),   linewidth = 1)
+plot(showMAs ? maS : na, "MA slow", color = color.new(color.orange, 0), linewidth = 1)
+pu = plot(showBands ? upper : na, "BB upper", color = color.new(color.gray, 50))
+pl = plot(showBands ? lower : na, "BB lower", color = color.new(color.gray, 50))
+fill(pu, pl, color = color.new(color.gray, 92))
 
-plotshape(buySignal,  title="BUY",  style=shape.labelup,   location=location.belowbar,
-          color=color.new(color.green, 0), textcolor=color.white, text="BUY",  size=size.small)
-plotshape(sellSignal, title="SELL", style=shape.labeldown, location=location.abovebar,
-          color=color.new(color.red, 0),   textcolor=color.white, text="SELL", size=size.small)
+plotshape(buySignal, title = "BUY", style = shape.labelup, location = location.belowbar,
+     color = color.new(color.green, 0), textcolor = color.white, text = "BUY", size = size.small)
+plotshape(sellSignal, title = "SELL", style = shape.labeldown, location = location.abovebar,
+     color = color.new(color.red, 0), textcolor = color.white, text = "SELL", size = size.small)
 
-// Signals the bot would SKIP — useful for understanding why nothing fired.
+// Signals the bot would SKIP — shows why nothing fired.
 blocked = consensusBuy and not inPos and (pastStopBuy or lowVol or inCooldown)
-plotshape(blocked, title="BUY blocked", style=shape.xcross, location=location.belowbar,
-          color=color.new(color.gray, 30), size=size.tiny)
+plotshape(blocked, title = "BUY blocked", style = shape.xcross, location = location.belowbar,
+     color = color.new(color.gray, 30), size = size.tiny)
 
 bgcolor(showBg and consensusBuy  ? color.new(color.green, 90) : na)
 bgcolor(showBg and consensusSell ? color.new(color.red,   90) : na)
 
 // ------------------------------------------------------------ vote table ----
-if showVotes and barstate.islast
-    var table t = table.new(position.top_right, 2, 7, border_width=1)
-    f_row(r, k, v, col) =>
-        table.cell(t, 0, r, k, text_color=color.gray, text_size=size.small,
-                   text_halign=text.align_left)
-        table.cell(t, 1, r, v, text_color=col, text_size=size.small,
-                   text_halign=text.align_right)
-    sTxt(b, s) => b ? "BUY" : s ? "SELL" : "HOLD"
-    sCol(b, s) => b ? color.green : s ? color.red : color.gray
+var table voteTable = table.new(position.top_right, 2, 7, border_width = 1)
 
-    f_row(0, "RSI " + str.tostring(rsi, "#.0"),  sTxt(rsiBuySig, rsiSellSig), sCol(rsiBuySig, rsiSellSig))
-    f_row(1, "Bollinger",                        sTxt(bbBuySig,  bbSellSig),  sCol(bbBuySig,  bbSellSig))
-    f_row(2, "MA cross",                         sTxt(maBuySig,  maSellSig),  sCol(maBuySig,  maSellSig))
-    f_row(3, "Consensus",
-          consensusBuy ? "BUY " + str.tostring(buyVotes) + "/3"
-          : consensusSell ? "SELL " + str.tostring(sellVotes) + "/3" : "none",
-          consensusBuy ? color.green : consensusSell ? color.red : color.gray)
-    f_row(4, "ATR/close", str.tostring(volPct, "#.00") + "%",
-          lowVol ? color.red : color.green)
-    f_row(5, "Gate",
-          pastStopBuy ? "past 15:00" : inCooldown ? "cooldown" : lowVol ? "low vol" : "open",
-          (pastStopBuy or inCooldown or lowVol) ? color.orange : color.green)
-    f_row(6, "Position", inPos ? "LONG" : "flat", inPos ? color.green : color.gray)
+if showVotes and barstate.islast
+    table.cell(voteTable, 0, 0, "RSI " + str.tostring(rsi, "#.0"), text_color = color.gray, text_size = size.small, text_halign = text.align_left)
+    table.cell(voteTable, 1, 0, sigText(rsiBuySig, rsiSellSig), text_color = sigColor(rsiBuySig, rsiSellSig), text_size = size.small, text_halign = text.align_right)
+
+    table.cell(voteTable, 0, 1, "Bollinger", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
+    table.cell(voteTable, 1, 1, sigText(bbBuySig, bbSellSig), text_color = sigColor(bbBuySig, bbSellSig), text_size = size.small, text_halign = text.align_right)
+
+    table.cell(voteTable, 0, 2, "MA cross", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
+    table.cell(voteTable, 1, 2, sigText(maBuySig, maSellSig), text_color = sigColor(maBuySig, maSellSig), text_size = size.small, text_halign = text.align_right)
+
+    consTxt = consensusBuy ? "BUY " + str.tostring(buyVotes) + "/3" : consensusSell ? "SELL " + str.tostring(sellVotes) + "/3" : "none"
+    table.cell(voteTable, 0, 3, "Consensus", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
+    table.cell(voteTable, 1, 3, consTxt, text_color = sigColor(consensusBuy, consensusSell), text_size = size.small, text_halign = text.align_right)
+
+    table.cell(voteTable, 0, 4, "ATR/close", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
+    table.cell(voteTable, 1, 4, str.tostring(volPct, "#.00") + "%", text_color = lowVol ? color.red : color.green, text_size = size.small, text_halign = text.align_right)
+
+    gateTxt = pastStopBuy ? "past 15:00" : inCooldown ? "cooldown" : lowVol ? "low vol" : "open"
+    gateCol = (pastStopBuy or inCooldown or lowVol) ? color.orange : color.green
+    table.cell(voteTable, 0, 5, "Gate", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
+    table.cell(voteTable, 1, 5, gateTxt, text_color = gateCol, text_size = size.small, text_halign = text.align_right)
+
+    table.cell(voteTable, 0, 6, "Position", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
+    table.cell(voteTable, 1, 6, inPos ? "LONG" : "flat", text_color = inPos ? color.green : color.gray, text_size = size.small, text_halign = text.align_right)
 
 // ----------------------------------------------------------------- alerts ----
 alertcondition(buySignal,  "Bot BUY",  "Dhan bot consensus BUY on {{ticker}} at {{close}}")
