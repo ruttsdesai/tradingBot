@@ -100,3 +100,40 @@ deliberate and manual:
   real fill slippage beyond the flat cost assumption.
 - **Sample size beats cleverness.** A variant that wins by 0.1pp over 55 days is
   not a discovery.
+
+---
+
+## `run_consensus.py` — does requiring more strategies to agree help?
+
+Closes a gap the other scripts name in their own docstrings: the lab ran one
+strategy at a time and had never modelled the **consensus vote** the live bot
+actually trades. `LiveConsensusStrategy` mirrors `dhan_live_trader` exactly —
+BUY when BUY votes > SELL votes and >= `min_agree`, SELL when SELL > BUY, HOLD
+abstains — using the **config** parameters (Bollinger 10/1.5, not the library
+default 20/2.0).
+
+`strategies/ensemble.py` is deliberately not reused: it exits the moment
+buy-consensus is lost, a much tighter exit rule, which would confound the entry
+threshold under test with an exit change.
+
+```
+python lab/run_consensus.py                    # 5m, 55 days, live basket
+python lab/run_consensus.py --cost-pct 0.001   # stress at double costs
+```
+
+### Result (2026-08-21): more agreement is worse
+
+| `min_agree` | avg return | trades | Rs/round-trip | at 2x costs |
+|---|---|---|---|---|
+| 1 (live setting) | +1.13% | 890 | +12.66 | -2.80% |
+| 2 | +0.00% | 174 | +0.24 | -0.99% |
+| 3 | never fires | 0 | — | — |
+
+Motivated by three weeks of paper logs where the 6 live entries with 2-of-3
+agreement returned +Rs314 against +Rs27 for the other 67. That was a post-hoc
+slice of n=6 (Welch t=+1.89) and it did not survive: the threshold trades 5x
+less and earns nothing per trade. **Do not ship 2-of-3.**
+
+Watch `Rs/round-trip`, not total return — it separates "better signal" from
+"merely fewer trades", which is the failure mode every filter tested here has
+turned out to have.

@@ -1,6 +1,6 @@
 # Chat Memory — tradingBot
 
-> Updated: 2026-07-20
+> Updated: 2026-08-21
 > Sessions: Dhan SL/TP, crypto multi-strategy, scheduler continuous, security IDs, live trading, SL/TP reconcile + OCO + dual scheduler, **paper-trading P&L fix + consensus voting + session logging**
 
 ---
@@ -595,6 +595,75 @@ but t<=0.62, also noise. VWAP, the one I flagged as most plausible, showed nothi
 - Levers ranked for the user: (1) bigger positions = better cost %, the only lever that improves
   economics rather than just scaling rupees; (2) more capital = linear; (3) more trades/tickers =
   tested, worse; (4) leverage = last, can reach zero.
+
+**2026-08-21 — THE PRE-REGISTERED TEST CONCLUDED. VERDICT: |t| < 2, INCONCLUSIVE => STOP.**
+- 18 session logs analysed (2026-08-03..08-21). Data quality was excellent and leaves no excuses:
+  367-376 of 376 market minutes polled every single day (97-100%), zero missed square-offs, zero
+  data outages, one transient Telegram connect failure at 08-17 startup (recovered on restart).
+  The infra fixes (QuickEdit, cash-sync, intraday timing) are all holding in the wild.
+- Day-by-day realized P&L is now read straight from the `[SUMMARY]` line each log prints at 15:30
+  (more reliable than differencing `Restored state` cash, and it correctly attributes the multi-day
+  sessions: the 08-12 log spans 08-12..08-14, the 08-17 log spans 08-17..08-18).
+
+  | config | days | total | mean/day | t | win days |
+  |---|---|---|---|---|---|
+  | trailing-only (08-03..08-07) | 5 | **-Rs1,166** | -Rs233 | **-2.62** | 1/5 |
+  | reverted, POOLED with 07-27/29/30 | 12 | +Rs336 | +Rs28 | **+0.46** | 6/12 |
+  | reverted, new data only (08-10..08-21) | 9 | -Rs190 | -Rs21 | -0.29 | 3/9 |
+
+- **DECISION RULE FIRES: |t| = 0.46 < 2 => inconclusive => per the rule agreed 2026-08-07 this is a
+  REAL ANSWER, not grounds to extend.** Do NOT scale position size. n=12 vs the n=13 target is
+  immaterial: one more day cannot move t=0.46 past 2.
+- The trailing-only config is separately CONFIRMED BAD at t=-2.62. That revert was correct.
+- **The one-line explanation of the whole 3 weeks:** 242 trades, gross **+Rs441**, costs **-Rs1,797**,
+  net **-Rs1,356**. The edge is real but roughly 4x too small to pay for the trading it requires.
+  Avg round trip: +0.135% gross move on Rs14,850 notional, 33min hold, 58% win rate, avg win +Rs31
+  vs avg loss -Rs31. A 58% win rate with a 1.00 win/loss ratio is a coin flip that pays commission.
+- Equity: Rs100,765.89 -> Rs99,409.69 over 15 sessions (-1.35%). Since inception -0.59%.
+
+**2026-08-21 — CONSENSUS THRESHOLD TESTED AND REJECTED (`lab/run_consensus.py`, NEW).**
+- The logs showed 90% of live entries are 1-of-3 votes (52/73 are Bollinger alone; HOLD abstains, so
+  one strategy carries the vote). The 6 entries with genuine 2-of-3 agreement returned +Rs314
+  (mean +Rs52, 83% win) against +Rs27 for the other 67 (mean +Rs0.44, 56% win).
+- That is a **post-hoc slice of n=6**; Welch t = +1.89, short of |t|>2 before any penalty for having
+  found it by looking. Treated as a hypothesis and tested, prediction pre-registered in the docstring.
+- Built `lab/run_consensus.py` — closes a gap every other lab script names in its own docstring: the
+  lab had never modelled the consensus vote, only single strategies. `LiveConsensusStrategy` mirrors
+  `dhan_live_trader` exactly (BUY when BUY>SELL and >=min_agree; SELL when SELL>BUY; HOLD abstains)
+  with CONFIG params (Bollinger 10/1.5, not the library default 20/2.0). `strategies/ensemble.py` is
+  deliberately NOT reused — it exits on loss of consensus, a much tighter exit that would confound
+  the entry threshold with an exit change.
+- **RESULT — requiring more agreement makes it WORSE, decisively:**
+
+  | min_agree | avg ret | trades | Rs/round-trip | at 2x costs |
+  |---|---|---|---|---|
+  | 1 (live) | +1.13% | 890 | +12.66 | -2.80% |
+  | 2 | +0.00% | 174 | +0.24 | -0.99% (-Rs56.68/RT) |
+  | 3 | never fires | 0 | - | - |
+
+- The live +Rs314 was noise. Prediction confirmed; hypothesis closed. **Do not ship 2-of-3.**
+
+**2026-08-21 — BUG FOUND IN THE LOGS AND FIXED: position sizer vs risk check (float epsilon).**
+- 24 buys over the 3 weeks were rejected with the tell-tale `$15,918 > $15,918 max` — value equal to
+  the cap, refused. `dhan_live_trader` computed `quantity = max_value / price` as a RAW FLOAT and
+  handed it to `check_buy`, where `quantity*price` reproduces `max_value` to within floating point
+  and then fails a strict `>`. Whether it lands a ULP above or below is luck, so it rejected roughly
+  half of all at-the-cap entries at random. `submit_buy` sends `int(quantity)` anyway, so the order
+  would always have been fine — only the check was wrong.
+- Fixed in `engine/dhan_live_trader.py`: floor to whole shares BEFORE the risk check.
+- Verified against the exact failing case (M&M @ Rs3,399.80, cap Rs15,918.13): raw float rejected,
+  floored qty=4 allowed.
+- **Caveat on the concluded test:** this silently suppressed ~10% of intended entries during it. It
+  does not change the verdict (the suppressed trades average out to ~zero like the rest), but the
+  sample was not quite the strategy as designed.
+
+**2026-08-21 — TIME-EXIT observation (NOT a finding; noted so nobody re-derives it as one).**
+- All 6 time-exits under the reverted config were losses (avg -0.57%, ~-Rs515 total). Since the other
+  67 round trips netted +Rs341, the 6 time-exits more than account for the period's loss.
+- **This is close to tautological, not an insight:** the 120m time-exit fires only when P&L < +0.5%,
+  i.e. it is DEFINED to trigger on non-winners. It does not follow that removing it would help — that
+  needs a lab test of whether those positions recover, and `baseline_longhold` / `hold_60m` variants
+  already exist in `lab/run_experiment.py` for exactly that.
 
 **Security note:** user has repeatedly pasted Dhan JWT access tokens into chat. They expire in 24h;
 always tell them to regenerate rather than reuse, tokens go only in git-ignored `.env`, never commit

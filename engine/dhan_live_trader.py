@@ -1287,7 +1287,13 @@ class DhanLiveTrader:
                     print(f"  [DHAN] BUY skipped for {ticker}: re-entry cooldown "
                           f"({mins:.0f}m < {self.config.reentry_cooldown_minutes}m since exit)")
                 else:
-                    # Size the position
+                    # Size the position. Floor to whole shares BEFORE the risk
+                    # check: submit_buy sends int(quantity) anyway, but
+                    # check_buy was being handed the raw float, whose
+                    # quantity*price reproduces max_value to within floating
+                    # point and then fails a strict `>` against it. That
+                    # rejected 24 otherwise-valid buys over 2026-08-03..08-21,
+                    # every one logged as the tell-tale "$15,918 > $15,918 max".
                     max_value = portfolio.total_value * self.risk_manager.max_allocation_pct
                     if self.config.use_atr_sizing and atr_val and atr_val > 0:
                         risk_amount = portfolio.total_value * self.config.position_risk_pct
@@ -1295,6 +1301,7 @@ class DhanLiveTrader:
                         quantity = min(risk_amount / stop_distance, max_value / price)
                     else:
                         quantity = max_value / price
+                    quantity = float(int(quantity))
 
                     risk = self.risk_manager.check_buy(portfolio, base, quantity, price)
                     if not risk.allowed:
