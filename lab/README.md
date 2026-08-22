@@ -137,3 +137,73 @@ less and earns nothing per trade. **Do not ship 2-of-3.**
 Watch `Rs/round-trip`, not total return — it separates "better signal" from
 "merely fewer trades", which is the failure mode every filter tested here has
 turned out to have.
+
+---
+
+## `run_xsectional.py` — is a stock cheap RELATIVE TO ITS PEERS?
+
+The first test here that asks a structurally different question. Everything
+else — RSI, Bollinger, MA, MACD, momentum, regime, volume, MTF — asks "will
+this stock go up?" and computes a published indicator on one price series.
+This ranks sector peers against each other, buys the laggard, shorts the
+leader, and holds. The object under test is a **spread**, which has an
+economic anchor a price level does not, and it is market-neutral by
+construction.
+
+```
+python lab/run_xsectional.py                    # 5m bars, intraday only
+python lab/run_xsectional.py --daily --gross    # daily bars, signal isolated
+python lab/run_xsectional.py --daily --control  # + momentum sign-flip check
+```
+
+Universe: 38 NSE large caps in 8 sectors, 5 years of daily bars
+(`data/xsec_cache/`, git-ignored, re-fetchable). Rebalances are
+**non-overlapping**, so each observation is independent and the t-stat needs
+no overlap correction. Costs are charged on all **four** fills of a
+long/short round trip.
+
+**Two guards worth copying into any future experiment here:**
+
+- `--control` runs momentum, the exact sign-flip of reversal. The two net
+  means must sum to precisely `-2 x cost`. If both ever look good, the
+  harness is broken, not the market.
+- The **split-sample check runs automatically** on the strongest cell. This is
+  the step that has killed every candidate found in this repo, so it is not
+  left to the reader.
+
+### Result: a real effect, one-third the size it needs to be
+
+**Intraday (5m) — dead.** Gross edge under 1bp against a 20bp round-trip cost.
+Not close, and the pattern across lookbacks is ragged, which the
+pre-registered prediction named in advance as the signature of noise.
+
+**Daily — a genuine finding.** 1-day cross-sectional reversal, `L=3, H=1`:
+
+| | mean | t | n |
+|---|---|---|---|
+| Full sample | **+6.76 bp/day** | **+3.80** | 9,872 |
+| First half | +6.20 bp | +2.50 | 4,936 |
+| Second half | +7.72 bp | +3.00 | 4,936 |
+
+It survives the split-sample check, it is positive in all four quarters of
+the sample, and it got *stronger* as tickers were added — the opposite of
+what noise does. **This is the only effect in this repo to survive that
+gauntlet.** Gross Sharpe ≈ 0.58.
+
+**And it is still not tradeable.** Four fills cost ~20bp; the effect is 6.8bp.
+
+| Per-fill cost | Round trip | Net/day | |
+|---|---|---|---|
+| 5.0 bp — cash equity, small size | 20 bp | −13.1 bp | loses money |
+| 3.5 bp — cash equity, ₹2L+ positions | 14 bp | −7.1 bp | loses money |
+| 1.5 bp — single-stock futures, large | 6 bp | +0.9 bp | marginal |
+| **1.74 bp** | **7 bp** | **0** | **breakeven** |
+
+Longer holds do not rescue it: the effect is specifically a *1-day* one, so
+stretching the horizon adds noise without adding edge (H=20..60 is ragged and
+insignificant on collapsing sample sizes).
+
+**The transferable lesson.** Two independent investigations — the live equity
+bot and this one — landed on the same shape: *the signal is real and the cost
+is several times larger than the signal.* Cost per round trip, not signal
+discovery, is the binding constraint on this whole enterprise.

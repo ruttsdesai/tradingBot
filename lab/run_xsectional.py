@@ -219,6 +219,28 @@ def main() -> None:
         print(f"  {L:>4} {H:>4} {r['n']:>6} {r['mean_bp']:>+10.2f} {r['t']:>+7.2f} "
               f"{r['win_rate']:>7.1f} {r['total_pct']:>+9.2f}{flag}")
 
+    # Split-sample check on whatever looked best. This is the step that has
+    # killed every candidate found in this repo, so it is not optional and it
+    # is not left to the reader: a real effect shows up in BOTH halves of the
+    # sample. One that lives in one half is noise, or an effect that has since
+    # been arbitraged away — either way, not tradeable now.
+    scored = [r for r in results if r.get("n", 0) >= 30]
+    if scored:
+        best = max(scored, key=lambda r: abs(r["t"]))
+        n_half = len(panel) // 2
+        print(f"\n  SPLIT-SAMPLE CHECK on the strongest cell "
+              f"(L={best['L']}, H={best['H']}, t={best['t']:+.2f}):")
+        print(f"  {'sample':<14}{'n':>7}{'mean(bp)':>11}{'t':>8}")
+        for nm, sub in (("first half", panel.iloc[:n_half]),
+                        ("second half", panel.iloc[n_half:])):
+            h = run(sub, sectors, best["L"], best["H"], cost, "reversal",
+                    intraday=not args.daily)
+            if h.get("n", 0) >= 30:
+                print(f"  {nm:<14}{h['n']:>7}{h['mean_bp']:>+11.2f}{h['t']:>+8.2f}")
+            else:
+                print(f"  {nm:<14}{h.get('n',0):>7}   (too few observations)")
+        print("  -> if these two disagree, the full-sample number is not an edge.")
+
     if args.control:
         print(f"\n  CONTROL — momentum (sign-flip; must mirror the above):")
         for L, H in grid:

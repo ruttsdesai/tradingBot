@@ -1,6 +1,6 @@
 # Chat Memory — tradingBot
 
-> Updated: 2026-08-21
+> Updated: 2026-08-22
 > Sessions: Dhan SL/TP, crypto multi-strategy, scheduler continuous, security IDs, live trading, SL/TP reconcile + OCO + dual scheduler, **paper-trading P&L fix + consensus voting + session logging**
 
 ---
@@ -664,6 +664,57 @@ but t<=0.62, also noise. VWAP, the one I flagged as most plausible, showed nothi
   i.e. it is DEFINED to trigger on non-winners. It does not follow that removing it would help — that
   needs a lab test of whether those positions recover, and `baseline_longhold` / `hold_60m` variants
   already exist in `lab/run_experiment.py` for exactly that.
+
+**2026-08-22 — CROSS-SECTIONAL TEST (`lab/run_xsectional.py`, NEW). FIRST REAL EFFECT FOUND.**
+- User asked what the next steps are for a bot that actually makes money; this was step 1 of the
+  answer. First test in the repo that changes the QUESTION rather than the indicator: not "will this
+  stock go up" (a price level, no economic anchor, 40-year-old published TA) but "has this name
+  fallen more than its sector peers, and does the gap close" (a SPREAD, anchored by shared sector
+  shocks, market-neutral by construction).
+- Universe: 38 NSE large caps in 8 sectors, 5y daily + 55d 5m (`data/xsec_cache/`, git-ignored,
+  re-fetchable via the script). Non-overlapping rebalances so each observation is independent.
+  Costs charged on all FOUR fills of a long/short round trip (~20bp, double a directional trade).
+- Two guards built in and worth reusing: (1) `--control` runs momentum, the exact sign-flip, and the
+  two net means must sum to -2x cost — verified, this is what proves the harness; (2) the
+  SPLIT-SAMPLE CHECK runs automatically on the strongest cell.
+
+- **INTRADAY (5m): DEAD.** Gross edge <1bp vs 20bp cost. Pattern across lookbacks is ragged, which
+  the pre-registered prediction named in advance as the signature of noise. Net t ~ -20 everywhere.
+- **DAILY: A GENUINE EFFECT.** 1-day cross-sectional reversal, L=3/H=1:
+
+  | sample | mean | t | n |
+  |---|---|---|---|
+  | full | **+6.76 bp/day** | **+3.80** | 9,872 |
+  | first half | +6.20 bp | +2.50 | 4,936 |
+  | second half | +7.72 bp | +3.00 | 4,936 |
+
+  Survives split-sample. Positive in all 4 quarters (though magnitude swings a lot: +0.03, +12.68,
+  +3.40, +11.56). Got STRONGER as tickers were added — the opposite of what noise does.
+  **This is the only effect in this repo to survive that gauntlet.** Gross Sharpe ~0.58.
+- **AND IT IS STILL NOT TRADEABLE.** Breakeven is 1.74bp/fill; Dhan cash equity is ~5bp/fill.
+  Needs a 2.9x cost reduction. Single-stock futures at ~1.5bp/fill would be marginal (+0.9bp/day),
+  not comfortable. Longer holds do NOT rescue it — it is specifically a 1-DAY effect, so stretching
+  the horizon adds noise without adding edge (H=20..60 ragged, insignificant, n collapses).
+- **CAUTION for whoever reads this next:** do not let "we finally found something" become a reason
+  to trade it. The finding is that a real effect exists and is 1/3 the size of its own transaction
+  costs. That is a reason to attack COSTS, not a green light to deploy.
+
+**2026-08-22 — THE UNIFYING RESULT ACROSS BOTH INVESTIGATIONS.**
+- Live equity bot (3 weeks, 12 days): gross +Rs173/day, cost -Rs145/day, net +Rs28 (t=0.46).
+  Gross t=+2.47 but FRAGILE — drops to 1.31 on August-only, so signal plausible, not established.
+- Cross-sectional (5y, 9,872 obs): gross +6.8bp/day (t=3.80, stable), cost 20bp, net negative.
+- **Same shape twice, from independent data: the signal is real and the cost is several times
+  larger.** Cost per round trip — NOT signal discovery — is the binding constraint on this project.
+- Levers that actually move cost, ranked: (1) bigger positions — Dhan brokerage is min(Rs20, 0.03%)
+  PER ORDER so it CAPS above Rs66,667; cost/RT falls 0.106% -> 0.059% going Rs15k -> Rs200k, and
+  market impact is a non-issue (Rs200k of ASIANPAINT is 77 shares vs millions traded daily);
+  (2) fewer fills per idea — directional pays 2, long/short pays 4; (3) cheaper instrument —
+  single-stock or index futures; (4) longer holds, but ONLY if the effect actually lives at that
+  horizon, which the 1-day reversal does not.
+- **Cost of the size experiment, computed so it is not hand-waved:** at Rs100k positions the edge
+  needs 65 more trading days to confirm and **-Rs49,428 is the loss if the true edge is zero**;
+  at Rs200k, 28 days and **-Rs29,275**. That is the honest price of finding out. NOT recommended
+  before something cheaper pays off.
 
 **Security note:** user has repeatedly pasted Dhan JWT access tokens into chat. They expire in 24h;
 always tell them to regenerate rather than reuse, tokens go only in git-ignored `.env`, never commit
