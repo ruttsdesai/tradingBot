@@ -111,9 +111,33 @@ live_trading:
 dhan_live_trading:
   sandbox: false                 # true = sandbox (no IP whitelist needed!), false = REAL MONEY (requires IP whitelist)
   disable_ssl: false             # true if sandbox SSL issues
-  initial_capital: 1027          # Rs 1,027 actual balance (down from 3,000 after churning losses)
-  max_positions: 2               # max 2 concurrent positions (small capital — Rs ~500 each at 35%)
-  max_allocation_pct: 0.35       # max 35% per position (~Rs 360) — prevents single-position wipeout
+  initial_capital: 1027          # Rs 1,027 actual balance (real-money live mode; --capital overrides for paper)
+  max_positions: 6               # up to 6 concurrent positions (one per ticker in the paper set)
+  max_allocation_pct: 0.16       # max 16% per position → 6 × 16% ≈ 96% deployed, leaves a cash buffer
+  reentry_cooldown_minutes: 15   # after exiting a symbol, wait 15m before re-buying it (curbs churn; 0 = off)
+  # Exit policy — lab-validated (55d, 15 combos, costs both sides):
+  # replacing the strategy SELL with a 0.8% trailing stop returned +1.33% vs
+  # baseline +0.41%, 13/15 combos profitable vs 9/15, Sharpe 0.86 vs 0.44, and
+  # was the ONLY variant still positive at doubled costs. Set both to false to
+  # revert to the old behaviour (strategy sells, no trailing stop).
+  # REVERTED 2026-08-07 to the configuration that ran 07-27..07-30 (+Rs526 over
+  # 3 days, net of costs). The trailing-stop-replaces-sells policy lost Rs792
+  # over 4 valid days (08-04..08-07). Its mechanism failed live: the trail only
+  # arms once price exceeds entry, and these names rarely run +0.8% intraday, so
+  # winners seldom triggered it while losers had NO exit at all (5% stop is
+  # unreachable, strategy sells were off) and just bled to the 120-min time-exit.
+  # Exits went TIME-EXIT 21 / TRAILING-STOP 8 / SQUARE-OFF 6 across 35 fills.
+  disable_strategy_sells: false  # strategy SELL signals close positions again
+  trailing_stop_enabled: false   # off — matches the 07-27..07-30 config exactly
+  trailing_stop_pct: 0.008       # 0.8% below peak — reachable intraday (the old 8% never once fired)
+  trailing_stop_atr_mult: 0.0    # >0 uses ATR*mult below peak instead of the pct
+  # Paper cost model. false = flat 0.05%/side (accurate at the current Rs16k
+  # positions, and what the pooled 07-27..07-30 days were measured under, so it
+  # stays the default while the 2-week test runs). true = model Dhan's real
+  # charge stack, where brokerage caps at Rs20/order — turn this ON before
+  # testing larger positions, or paper will understate the size benefit
+  # (round trip 0.106% at Rs16k vs 0.059% at Rs200k).
+  size_aware_costs: false
   poll_interval_seconds: 60      # seconds between evaluation cycles
   intraday: true                 # true = use intraday bars (5m/15m) for continuous all-day trading
   intraday_interval: "5m"        # candle interval for intraday: 1m, 5m, 15m, 30m, 1h
@@ -233,7 +257,7 @@ strategies:
 scheduler:
   run_time: "09:15"             # Run daily at 9:15 AM IST (NSE market open)
   timezone: "Asia/Kolkata"      # Indian Standard Time (NSE market hours: 9:15 AM - 3:30 PM)
-  mode: "dhan"                  # paper | live | crypto | dhan
+  mode: "dhan"                  # paper | live | crypto | dhan | both (crypto 24/7 + dhan daily)
 
 # Crypto Live Trading (Binance)
 crypto_live_trading:
@@ -247,6 +271,35 @@ crypto_live_trading:
     - BTCUSDT
     - ETHUSDT
     - SOLUSDT
+
+# Parallel Day Trading — all 5 strategies run in parallel on ONE chart and
+# merge into a single BUY/SELL decision via adaptive performance-weighted voting.
+# Run with: python cli.py day-trade --ticker AAPL --interval 5m
+day_trading:
+  interval: "5m"                # intraday candle interval: 1m, 2m, 5m, 15m, 30m, 1h
+  days: 60                      # days of intraday history (Yahoo caps 5m at 60)
+  initial_capital: 100000.0
+  commission_pct: 0.0005        # 0.05% per side (commission + slippage estimate)
+  entry_threshold: 0.2          # consensus score to BUY (0.2 = weighted 60/40 bullish)
+  exit_threshold: -0.2          # consensus score to SELL (weighted majority bearish)
+  perf_window: 10               # recent virtual trades used to weight each strategy
+  perf_sensitivity: 100.0       # weight = 1 + sensitivity * avg virtual return
+  min_weight: 0.25              # losing strategies are muted, never silenced
+  max_weight: 3.0               # winning strategies get up to 3x voice
+  min_trades_for_weight: 3      # virtual trades before weight deviates from 1.0
+  square_off: true              # force-exit at session close (no overnight risk)
+  no_entry_last_bars: 6         # no new entries in last N bars (30 min on 5m)
+  min_volatility_pct: 0.0       # skip entries if ATR/price below this (0 = off)
+  trend_filter_period: 200      # only enter longs above this EMA (0 = off);
+                                # keeps the bot out of persistent downtrends
+  risk:                         # intraday-tight risk limits (vs 5%/15% daily)
+    max_positions: 1            # one symbol, one chart
+    max_allocation_pct: 0.95    # deploy nearly all capital into the single position
+    max_daily_loss_pct: 0.02    # stop trading for the day after -2%
+    stop_loss_pct: 0.01         # 1% hard stop per position
+    take_profit_pct: 0.025      # 2.5% take profit
+    trailing_stop_enabled: true
+    trailing_stop_pct: 0.008    # trail 0.8% below intraday peak
 
 # Ensemble Strategy (votes across multiple strategies for higher conviction)
 ensemble:

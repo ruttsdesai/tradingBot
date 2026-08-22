@@ -19,6 +19,7 @@ Setup:
     4. Run: python cli.py dhan-live --strategy macd --once
 """
 
+import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Optional
@@ -36,6 +37,7 @@ from .notifier import (
     format_sl_msg,
     format_tp_msg,
     format_session_start,
+    format_daily_summary,
     format_error,
 )
 from strategies.base import BaseStrategy, Signal, StrategyResult
@@ -137,6 +139,22 @@ class DhanLiveTraderConfig:
     tg_api_id: int = 0
     tg_api_hash: str = ""
     tg_session: str = "dhan_trader"
+    reentry_cooldown_minutes: int = 15   # after exiting a symbol, wait this long before re-buying it (0 = off; curbs churn)
+    # ── Exit policy ────────────────────────────────────────────────────
+    # Lab (55d, 15 combos, costs both sides) found that REPLACING the
+    # strategy SELL with a reachable trailing stop beat the baseline
+    # +1.33% vs +0.41%, 13/15 combos profitable vs 9/15, Sharpe 0.86 vs
+    # 0.44 — and was the only variant still positive at doubled costs.
+    # Live post-exit drift analysis predicted this: strategy sells fired
+    # into continuing momentum (+0.29pp more upside than a random moment).
+    disable_strategy_sells: bool = False   # ignore strategy SELL; let the trailing stop exit
+    trailing_stop_enabled: bool = False
+    trailing_stop_pct: float = 0.008       # 0.8% below peak — reachable intraday (8% never fires)
+    trailing_stop_atr_mult: float = 0.0    # >0 uses ATR*mult below peak instead of the pct
+    # Paper only: model Dhan's real charge stack (brokerage caps at Rs20/order)
+    # instead of a flat per-side pct. Matters once positions exceed ~Rs66,667,
+    # where the cap makes larger positions materially cheaper per rupee traded.
+    size_aware_costs: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -183,12 +201,20 @@ class DhanLiveTrader:
             max_daily_loss_pct=config.max_daily_loss_pct,
             stop_loss_pct=config.stop_loss_pct,
             take_profit_pct=config.take_profit_pct,
+            trailing_stop_enabled=config.trailing_stop_enabled,
+            trailing_stop_pct=config.trailing_stop_pct,
+            trailing_stop_atr_mult=config.trailing_stop_atr_mult,
         )
         self._dhan = None
         self._security_id_cache: dict[str, str] = dict(_KNOWN_SECURITY_IDS)
         self._notifier = None
         self._sl_orders: dict[str, str] = {}   # ticker (base) -> stop-loss order_id
         self._tp_orders: dict[str, str] = {}   # ticker (base) -> take-profit order_id
+        self._cnc_holdings: set[str] = set()   # symbols held as CNC delivery (sell as CNC, not MIS)
+        self._last_exit_time: dict[str, datetime] = {}  # base symbol -> last exit time (re-entry cooldown)
+        self._fill_log = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "state", "fill_quality.csv")
         self._init_notifier()
 
     # ------------------------------------------------------------------
@@ -238,6 +264,15 @@ class DhanLiveTrader:
     # ------------------------------------------------------------------
     # API response helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _field(d: dict, *keys, default=None):
+        """Read the first present key from a dict — Dhan responses mix
+        camelCase (v2 API) and snake_case (older SDK versions)."""
+        for k in keys:
+            if k in d and d[k] is not None:
+                return d[k]
+        return default
 
     @staticmethod
     def _unwrap(response):
@@ -408,12 +443,12 @@ class DhanLiveTrader:
             if isinstance(data, list):
                 for p in data:
                     positions.append({
-                        "symbol": p.get("trading_symbol", ""),
-                        "security_id": str(p.get("security_id", "")),
-                        "qty": int(p.get("net_qty", 0)),
-                        "avg_entry_price": float(p.get("average_price", 0.0)),
-                        "ltp": float(p.get("last_price", 0.0)),
-                        "unrealized_pl": float(p.get("unrealized_profit", 0.0)),
+                        "symbol": self._field(p, "tradingSymbol", "trading_symbol", default=""),
+                        "security_id": str(self._field(p, "securityId", "security_id", default="")),
+                        "qty": int(self._field(p, "netQty", "net_qty", default=0)),
+                        "avg_entry_price": float(self._field(p, "costPrice", "buyAvg", "average_price", default=0.0)),
+                        "ltp": float(self._field(p, "lastTradedPrice", "last_price", default=0.0)),
+                        "unrealized_pl": float(self._field(p, "unrealizedProfit", "unrealized_profit", default=0.0)),
                     })
         except Exception as e:
             print(f"  [DHAN] Error fetching positions: {e}")
@@ -431,11 +466,11 @@ class DhanLiveTrader:
             if isinstance(data, list):
                 for h in data:
                     holdings.append({
-                        "symbol": h.get("trading_symbol", ""),
-                        "security_id": str(h.get("security_id", "")),
-                        "qty": int(h.get("total_qty", 0)),
-                        "avg_entry_price": float(h.get("average_price", 0.0)),
-                        "ltp": float(h.get("last_price", 0.0)),
+                        "symbol": self._field(h, "tradingSymbol", "trading_symbol", default=""),
+                        "security_id": str(self._field(h, "securityId", "security_id", default="")),
+                        "qty": int(self._field(h, "totalQty", "total_qty", default=0)),
+                        "avg_entry_price": float(self._field(h, "avgCostPrice", "average_price", default=0.0)),
+                        "ltp": float(self._field(h, "lastTradedPrice", "last_price", default=0.0)),
                     })
         except Exception as e:
             print(f"  [DHAN] Error fetching holdings: {e}")
@@ -464,19 +499,20 @@ class DhanLiveTrader:
 
         # Combine positions + holdings
         all_positions: dict[str, dict] = {}
+        self._cnc_holdings.clear()
 
         try:
             for p in self._unwrap(dhan.get_positions()) or []:
                 if not isinstance(p, dict):
                     continue
-                sym = p.get("trading_symbol", "")
-                qty = int(p.get("net_qty", 0))
+                sym = self._field(p, "tradingSymbol", "trading_symbol", default="")
+                qty = int(self._field(p, "netQty", "net_qty", default=0))
                 if qty <= 0:
                     continue
                 all_positions[sym] = {
                     "symbol": sym,
                     "qty": qty,
-                    "avg_entry_price": float(p.get("average_price", 0.0)),
+                    "avg_entry_price": float(self._field(p, "costPrice", "buyAvg", "average_price", default=0.0)),
                 }
         except Exception:
             pass
@@ -485,10 +521,12 @@ class DhanLiveTrader:
             for h in self._unwrap(dhan.get_holdings()) or []:
                 if not isinstance(h, dict):
                     continue
-                sym = h.get("trading_symbol", "")
-                qty = int(h.get("total_qty", 0))
+                sym = self._field(h, "tradingSymbol", "trading_symbol", default="")
+                qty = int(self._field(h, "totalQty", "total_qty", default=0))
                 if qty <= 0:
                     continue
+                # Delivery holdings must be sold as CNC, never as intraday MIS
+                self._cnc_holdings.add(sym)
                 if sym in all_positions:
                     # Merge: add holdings qty to positions qty
                     all_positions[sym]["qty"] += qty
@@ -496,7 +534,7 @@ class DhanLiveTrader:
                     all_positions[sym] = {
                         "symbol": sym,
                         "qty": qty,
-                        "avg_entry_price": float(h.get("average_price", 0.0)),
+                        "avg_entry_price": float(self._field(h, "avgCostPrice", "average_price", default=0.0)),
                     }
         except Exception:
             pass
@@ -579,21 +617,21 @@ class DhanLiveTrader:
         In intraday mode, fetches 5 days of N-minute bars (e.g. 5m, 15m).
         In daily mode, fetches N years of 1d bars.
         """
-        from data.stocks import fetch_stock_data
+        from data.stocks import fetch_stock_data, fetch_intraday_data
 
         result: dict[str, pd.DataFrame] = {}
 
         if self.config.intraday:
             # Intraday: fetch 7 calendar days of N-minute bars (enough for
-            # all strategy warmups — 7 days of 5m = ~525 bars). yfinance
-            # limits 1m=7d, 5m/15m/30m=60d, 1h=730d. We use 7d for all
-            # to stay well within limits and keep DataFrames fast.
+            # all strategy warmups — 7 days of 5m = ~525 bars). Use the
+            # period-based intraday fetcher, which always includes today's
+            # live bars (a date-range fetch drops the current session, so the
+            # trader would otherwise evaluate on a frozen prior-day close).
             interval = self.config.intraday_interval
-            fetch_years = 7.0 / 365.0  # 7 calendar days
 
             for ticker in tickers:
                 try:
-                    df = fetch_stock_data(ticker, years=fetch_years, interval=interval)
+                    df = fetch_intraday_data(ticker, interval=interval, days=7)
                     result[ticker] = df
                 except Exception as e:
                     print(f"  [DHAN] Failed to fetch intraday bars for {ticker}: {e}")
@@ -614,6 +652,17 @@ class DhanLiveTrader:
     # ------------------------------------------------------------------
     # Order Execution
     # ------------------------------------------------------------------
+
+    def _sell_product_type(self, ticker: str):
+        """Product type for SELL-side orders on a symbol.
+
+        Delivery (CNC) holdings must be sold as CNC — an INTRA sell against
+        a holding opens a fresh intraday short instead of selling the shares.
+        """
+        dhan = self._init_client()
+        if strip_ns(ticker) in self._cnc_holdings:
+            return dhan.CNC
+        return dhan.INTRA if self.config.intraday else dhan.CNC
 
     def submit_buy(self, ticker: str, quantity: float) -> dict | None:
         """Submit a MKT buy order via Dhan. Returns order dict or None."""
@@ -687,7 +736,7 @@ class DhanLiveTrader:
         try:
             sid = self._lookup_security_id(ticker)
 
-            product_type = dhan.INTRA if self.config.intraday else dhan.CNC
+            product_type = self._sell_product_type(ticker)
 
             response = dhan.place_order(
                 security_id=sid,
@@ -750,7 +799,7 @@ class DhanLiveTrader:
         trigger = round(trigger_price, 2)
         try:
             sid = self._lookup_security_id(ticker)
-            product_type = dhan.INTRA if self.config.intraday else dhan.CNC
+            product_type = self._sell_product_type(ticker)
 
             response = dhan.place_order(
                 security_id=sid,
@@ -800,7 +849,7 @@ class DhanLiveTrader:
         limit = round(limit_price, 2)
         try:
             sid = self._lookup_security_id(ticker)
-            product_type = dhan.INTRA if self.config.intraday else dhan.CNC
+            product_type = self._sell_product_type(ticker)
 
             response = dhan.place_order(
                 security_id=sid,
@@ -848,6 +897,24 @@ class DhanLiveTrader:
             print(f"  [DHAN] Failed to cancel order {order_id}: {e}")
             return False
 
+    def get_order_status(self, order_id: str) -> str:
+        """Fetch the current status of an order (e.g. TRADED, PENDING, CANCELLED).
+
+        Returns "" if the order cannot be looked up.
+        """
+        if not order_id:
+            return ""
+        dhan = self._init_client()
+        try:
+            data = self._unwrap(dhan.get_order_by_id(order_id))
+            if isinstance(data, list):
+                data = data[0] if data else {}
+            if isinstance(data, dict):
+                return str(data.get("orderStatus", data.get("order_status", ""))).upper()
+        except Exception as e:
+            print(f"  [DHAN] Could not fetch status of order {order_id}: {e}")
+        return ""
+
     def cancel_sl_tp_orders(self, ticker: str) -> None:
         """Cancel both stop-loss and take-profit orders for a ticker."""
         base = strip_ns(ticker)
@@ -886,9 +953,212 @@ class DhanLiveTrader:
         else:
             print(f"  [DHAN] WARNING: Failed to place TP for {ticker} — relying on polling-based monitoring")
 
+    # Order statuses that mean the order is no longer working at the broker
+    _DEAD_ORDER_STATUSES = frozenset({"CANCELLED", "CANCELED", "REJECTED", "EXPIRED"})
+    _PENDING_ORDER_STATUSES = frozenset({"TRANSIT", "PENDING", "TRIGGER_PENDING", "PART_TRADED"})
+
+    def reconcile_sl_tp(self, portfolio: Portfolio, tickers: list[str]) -> None:
+        """Reconcile broker-level SL/TP orders with the current portfolio.
+
+        Runs once per cycle, right after sync_portfolio():
+
+        1. Dangling sibling cleanup — if the broker executed the SL (or TP)
+           between cycles, cancel the surviving sibling order and drop the
+           position locally so strategies don't act on a closed position.
+        2. Restart protection — if an open position has no tracked SL/TP
+           (e.g. the bot was restarted), adopt matching pending SELL orders
+           from the broker, or place fresh SL/TP orders around the average
+           entry price.
+        """
+        # ── 1. Detect executed / dead tracked orders ───────────────
+        for base in sorted(set(self._sl_orders) | set(self._tp_orders)):
+            sl_id = self._sl_orders.get(base)
+            tp_id = self._tp_orders.get(base)
+            sl_status = self.get_order_status(sl_id) if sl_id else ""
+            tp_status = self.get_order_status(tp_id) if tp_id else ""
+
+            if sl_status == "TRADED":
+                print(f"  [DHAN] Broker executed STOP-LOSS for {base} [id={sl_id}] — cancelling sibling TP")
+                self._sl_orders.pop(base, None)
+                self._tp_orders.pop(base, None)
+                if tp_id and tp_status != "TRADED" and tp_status not in self._DEAD_ORDER_STATUSES:
+                    self.cancel_order(tp_id)
+                portfolio.positions.pop(base, None)
+                self._notify(format_sl_msg(base, f"Broker SL order executed [id={sl_id}]", "broker"))
+            elif tp_status == "TRADED":
+                print(f"  [DHAN] Broker executed TAKE-PROFIT for {base} [id={tp_id}] — cancelling sibling SL")
+                self._sl_orders.pop(base, None)
+                self._tp_orders.pop(base, None)
+                if sl_id and sl_status not in self._DEAD_ORDER_STATUSES:
+                    self.cancel_order(sl_id)
+                portfolio.positions.pop(base, None)
+                self._notify(format_tp_msg(base, f"Broker TP order executed [id={tp_id}]", "broker"))
+            else:
+                # Drop tracking for orders that died on their own
+                # (DAY orders expire at market close, manual cancels, rejects)
+                if sl_id and sl_status in self._DEAD_ORDER_STATUSES:
+                    self._sl_orders.pop(base, None)
+                if tp_id and tp_status in self._DEAD_ORDER_STATUSES:
+                    self._tp_orders.pop(base, None)
+                # Position vanished without either order trading — closed
+                # outside the bot. Cancel whatever is still working.
+                if base not in portfolio.positions and (base in self._sl_orders or base in self._tp_orders):
+                    print(f"  [DHAN] Position {base} closed outside the bot — cancelling leftover SL/TP")
+                    self.cancel_sl_tp_orders(base)
+
+        # ── 2. Ensure every open position is protected ─────────────
+        unprotected: list[tuple[str, str, Position]] = []
+        for ticker in tickers:
+            base = strip_ns(ticker)
+            pos = portfolio.positions.get(base)
+            if pos is None or pos.quantity <= 0:
+                continue
+            if base in self._sl_orders or base in self._tp_orders:
+                continue
+            unprotected.append((ticker, base, pos))
+
+        if not unprotected:
+            return
+
+        # Fetch the broker's order book once so we can adopt pending SELL
+        # orders that were placed before a restart instead of duplicating them.
+        pending_by_sid: dict[str, list[tuple[str, str]]] = {}
+        dhan = self._init_client()
+        try:
+            orders = self._unwrap(dhan.get_order_list())
+            if isinstance(orders, list):
+                for o in orders:
+                    if not isinstance(o, dict):
+                        continue
+                    status = str(o.get("orderStatus", o.get("order_status", ""))).upper()
+                    txn = str(o.get("transactionType", o.get("transaction_type", ""))).upper()
+                    if txn != "SELL" or status not in self._PENDING_ORDER_STATUSES:
+                        continue
+                    sid = str(o.get("securityId", o.get("security_id", "")))
+                    otype = str(o.get("orderType", o.get("order_type", ""))).upper()
+                    oid = str(o.get("orderId", o.get("order_id", "")))
+                    if sid and oid:
+                        pending_by_sid.setdefault(sid, []).append((otype, oid))
+        except Exception as e:
+            print(f"  [DHAN] Could not fetch order list for SL/TP adoption: {e}")
+
+        for ticker, base, pos in unprotected:
+            try:
+                sid = self._lookup_security_id(ticker)
+            except ValueError:
+                sid = ""
+            for otype, oid in pending_by_sid.get(sid, []):
+                if "STOP_LOSS" in otype or otype in ("SLM", "SL"):
+                    if base not in self._sl_orders:
+                        self._sl_orders[base] = oid
+                        print(f"  [DHAN] Adopted existing SL order for {base} [id={oid}]")
+                elif otype == "LIMIT" and base not in self._tp_orders:
+                    self._tp_orders[base] = oid
+                    print(f"  [DHAN] Adopted existing TP order for {base} [id={oid}]")
+            if base in self._sl_orders or base in self._tp_orders:
+                continue
+
+            print(f"  [DHAN] Position {base} has no SL/TP protection — placing orders")
+            self._place_sl_tp_orders(ticker, base, int(pos.quantity), pos.avg_entry_price)
+
     # ------------------------------------------------------------------
     # Strategy Execution
     # ------------------------------------------------------------------
+
+    def _enforce_intraday_timing(self, portfolio, tickers: list[str]) -> bool:
+        """Apply intraday time-of-day rules on the *current* clock.
+
+        Returns True when the caller must stop this cycle:
+          - past 15:10 IST → square off every open position (MIS must be flat
+            by 15:20), then halt;
+          - market otherwise closed (before 09:15 or after 15:30) → halt with
+            no trading.
+        Returns False during the normal trading window so the cycle proceeds.
+
+        Called both before and after the (possibly slow) data fetch so a lagging
+        cycle can neither skip the square-off window nor trade after the close.
+        """
+        if not self.config.intraday:
+            return False
+
+        now = self._ist_now()
+        minutes = now.hour * 60 + now.minute
+
+        if minutes >= self.config.force_square_off_minutes:
+            to_close = [t for t in tickers
+                        if strip_ns(t) in portfolio.positions
+                        and strip_ns(t) not in self._cnc_holdings]
+            if to_close:
+                print(f"  [DHAN] AUTO-SQUARE-OFF ({now.strftime('%H:%M')} IST): Closing all positions...")
+            for ticker in to_close:
+                base = strip_ns(ticker)
+                if base in portfolio.positions:
+                    pos = portfolio.positions[base]
+                    self.cancel_sl_tp_orders(ticker)
+                    order = self.submit_sell(ticker, pos.quantity)
+                    if order:
+                        exit_price = order.get("filled_avg_price") or portfolio.current_prices.get(base, pos.avg_entry_price)
+                        pnl = (exit_price - pos.avg_entry_price) * pos.quantity
+                        print(f"  [DHAN] SQUARE-OFF {ticker} x{pos.quantity} @ ~{order.get('filled_avg_price', 'MKT')} | P&L: Rs {pnl:+.2f}")
+                        portfolio.current_cash += order["qty"] * exit_price
+                        del portfolio.positions[base]
+                    else:
+                        print(f"  [DHAN] SQUARE-OFF {ticker} FAILED — position may remain open!")
+            return True
+
+        # Before 09:15 or after 15:30 — never open/adjust positions off-session.
+        if not self._is_market_open():
+            return True
+
+        return False
+
+
+    # ------------------------------------------------------------------
+    # Fill quality — the paper-to-live gap
+    # ------------------------------------------------------------------
+
+    def _record_fill(self, base: str, side: str, qty: int,
+                     expected: float, order: dict) -> None:
+        """Log expected vs actual fill price so slippage can be measured.
+
+        Paper fills at the last evaluated close by construction, so its
+        slippage is always 0 — the number only means something in LIVE mode,
+        where the order crosses the spread and can move the book. This is the
+        single measurement that decides whether a paper edge survives real
+        execution: ~0.02% of adverse slippage is enough to erase the best
+        edge observed so far.
+
+        Sign convention: POSITIVE slippage_pct = worse than expected (paid
+        more on a buy, received less on a sell), for both sides.
+        """
+        filled = order.get("filled_avg_price")
+        if not filled or not expected or expected <= 0:
+            return
+        if side == "BUY":
+            slip = (filled - expected) / expected
+        else:
+            slip = (expected - filled) / expected
+        try:
+            os.makedirs(os.path.dirname(self._fill_log), exist_ok=True)
+            new = not os.path.exists(self._fill_log)
+            with open(self._fill_log, "a", encoding="utf-8") as f:
+                if new:
+                    f.write("ts,mode,symbol,side,qty,expected,filled,"
+                            "slippage_pct,notional\n")
+                f.write(f"{datetime.now().isoformat(timespec='seconds')},"
+                        f"{getattr(self, '_mode_label', 'LIVE')},{base},{side},"
+                        f"{qty},{expected:.4f},{filled:.4f},{slip*100:.5f},"
+                        f"{qty*filled:.2f}\n")
+        except Exception:
+            pass  # never let logging break trading
+
+    def _in_reentry_cooldown(self, base: str) -> bool:
+        """True if `base` was exited less than reentry_cooldown_minutes ago."""
+        cd = self.config.reentry_cooldown_minutes
+        last = self._last_exit_time.get(base)
+        if cd <= 0 or last is None:
+            return False
+        return (datetime.now() - last).total_seconds() / 60.0 < cd
 
     def run_once(self, tickers: list[str]) -> dict:
         """Execute one evaluation cycle.
@@ -901,35 +1171,32 @@ class DhanLiveTrader:
         """
         dhan = self._init_client()
 
+        # Sync portfolio from broker (cheap: local in paper mode).
+        portfolio = self.sync_portfolio()
+
+        # ── Intraday timing guard (BEFORE the data fetch) ──────────
+        # The market-data fetch can be slow (yfinance rate-limiting), so a
+        # cycle can take many minutes. Enforcing square-off / market-closed
+        # rules here — on the CURRENT clock, before fetching — means a late
+        # cycle still squares off on time and never trades after the close.
+        if self._enforce_intraday_timing(portfolio, tickers):
+            return {}
+
         # Fetch recent bars (last 120 days for strategy warmup)
         data = self.get_historical_bars(tickers, days=120)
 
-        # Sync portfolio from broker
-        portfolio = self.sync_portfolio()
+        # Re-check timing AFTER the fetch: if the fetch itself pushed us past
+        # 15:10 (square-off) or 15:30 (close), halt now rather than opening or
+        # flipping positions with a market that has since closed.
+        if self._enforce_intraday_timing(portfolio, tickers):
+            return {}
+
         self.risk_manager.set_daily_start(portfolio.total_value)
 
-        # ── Intraday auto-square-off gate ──────────────────────────
-        # At 3:10 PM IST, force-close ALL open positions (20 min before
-        # market close). MIS positions must be squared off by 3:20 PM.
-        if self.config.intraday:
-            now = self._ist_now()
-            minutes = now.hour * 60 + now.minute
-            if minutes >= self.config.force_square_off_minutes:
-                print(f"  [DHAN] AUTO-SQUARE-OFF ({now.strftime('%H:%M')} IST): Closing all positions...")
-                for ticker in list(tickers):
-                    base = strip_ns(ticker)
-                    if base in portfolio.positions:
-                        pos = portfolio.positions[base]
-                        self.cancel_sl_tp_orders(ticker)
-                        order = self.submit_sell(ticker, pos.quantity)
-                        if order:
-                            pnl = (order.get("filled_avg_price", 0) - pos.avg_entry_price) * pos.quantity
-                            print(f"  [DHAN] SQUARE-OFF {ticker} x{pos.quantity} @ ~{order.get('filled_avg_price', 'MKT')} | P&L: Rs {pnl:+.2f}")
-                            del portfolio.positions[base]
-                        else:
-                            print(f"  [DHAN] SQUARE-OFF {ticker} FAILED — position may remain open!")
-                # Return early — no new evaluations after square-off
-                return {}
+        # Reconcile broker SL/TP orders: cancel dangling siblings after a
+        # broker-side SL/TP fill, and protect positions that have no orders
+        # (e.g. after a bot restart).
+        self.reconcile_sl_tp(portfolio, tickers)
 
         # ── Intraday stop-buying gate ──────────────────────────────
         # After 3:00 PM IST, don't open new positions (only 30 min left).
@@ -951,7 +1218,10 @@ class DhanLiveTrader:
             # Evaluate ALL strategies for this ticker
             idx = len(df) - 1
             price = df["close"].iloc[idx]
-            portfolio.update_price(ticker, price)
+            base = strip_ns(ticker)
+            # Key prices by base symbol — positions are keyed the same way,
+            # so total_value picks up live marks instead of stale entries
+            portfolio.update_price(base, price)
 
             # Pre-compute ATR (used for sizing AND intraday volatility filter)
             atr_val = None
@@ -969,43 +1239,61 @@ class DhanLiveTrader:
                 vol_pct = atr_val / price
                 if vol_pct < self.config.min_volatility_pct:
                     low_vol = True
-                    print(f"  [DHAN] Low volatility for {ticker}: ATR/close={vol_pct:.3%} < {self.config.min_volatility_pct:.1%} — skipping BUYs")
+                    print(f"  [DHAN] Low volatility for {ticker}: ATR/close={vol_pct:.3%} < {self.config.min_volatility_pct:.2%} — skipping BUYs")
 
-            # Track which strategies signaled this ticker
+            # Evaluate every strategy once and tally its vote. Trading is
+            # driven by CONSENSUS, not first-mover: a single strategy can no
+            # longer round-trip a position while others disagree (the churn
+            # where RSI keeps buying what MA_Crossover keeps selling).
             per_strategy_signals: list[str] = []
-            base = strip_ns(ticker)
+            buy_votes: list[str] = []
+            sell_votes: list[str] = []
 
             for strat in self.strategies:
                 # Pre-compute indicators (each strategy has its own prepare)
                 strat.prepare(df)
                 result: StrategyResult = strat.evaluate(df, idx)
                 per_strategy_signals.append(f"{strat.name}={result.signal.name}")
+                if result.signal == Signal.BUY:
+                    buy_votes.append(strat.name)
+                elif result.signal == Signal.SELL:
+                    sell_votes.append(strat.name)
 
             signals[ticker] = " | ".join(per_strategy_signals)
 
-            # Execute trades — iterate all strategies. Once any strategy
-            # takes action (BUY or SELL), stop processing further strategies
-            # for this ticker in this cycle to prevent churning (e.g. one
-            # strategy buying and another immediately selling at same price).
-            for strat in self.strategies:
-                # Re-evaluate to get fresh result for this strategy
-                result: StrategyResult = strat.evaluate(df, idx)
+            # Majority decides the action. A tie (equal BUY/SELL, or all HOLD)
+            # means no consensus → do nothing this cycle.
+            n_buy, n_sell = len(buy_votes), len(sell_votes)
+            total_strats = len(self.strategies)
+            consensus = None
+            if n_buy > n_sell:
+                consensus = Signal.BUY
+                vote_label = f"Consensus({n_buy}/{total_strats} BUY: {','.join(buy_votes)})"
+            elif n_sell > n_buy:
+                consensus = Signal.SELL
+                vote_label = f"Consensus({n_sell}/{total_strats} SELL: {','.join(sell_votes)})"
 
-                if result.signal == Signal.BUY:
-                    # Already holding?
-                    if base in portfolio.positions:
-                        continue
-
-                    # Intraday gate: stop buying after 3:00 PM
-                    if stop_buying:
-                        print(f"  [DHAN] BUY skipped for {ticker} [{strat.name}]: Past 3:00 PM — no new positions")
-                        continue
-
-                    # Volatility filter: skip if market is dead (checked once per ticker)
-                    if low_vol:
-                        continue
-
-                    # Size the position
+            if consensus == Signal.BUY and base not in portfolio.positions:
+                # Intraday gate: stop buying after 3:00 PM
+                if stop_buying:
+                    print(f"  [DHAN] BUY skipped for {ticker}: Past 3:00 PM — no new positions")
+                # Volatility filter: skip if market is dead (checked once per ticker)
+                elif low_vol:
+                    pass
+                # Re-entry cooldown: don't immediately re-buy a symbol we just
+                # exited (curbs the buy/sell/re-buy churn that bleeds on costs).
+                elif self._in_reentry_cooldown(base):
+                    mins = (datetime.now() - self._last_exit_time[base]).total_seconds() / 60.0
+                    print(f"  [DHAN] BUY skipped for {ticker}: re-entry cooldown "
+                          f"({mins:.0f}m < {self.config.reentry_cooldown_minutes}m since exit)")
+                else:
+                    # Size the position. Floor to whole shares BEFORE the risk
+                    # check: submit_buy sends int(quantity) anyway, but
+                    # check_buy was being handed the raw float, whose
+                    # quantity*price reproduces max_value to within floating
+                    # point and then fails a strict `>` against it. That
+                    # rejected 24 otherwise-valid buys over 2026-08-03..08-21,
+                    # every one logged as the tell-tale "$15,918 > $15,918 max".
                     max_value = portfolio.total_value * self.risk_manager.max_allocation_pct
                     if self.config.use_atr_sizing and atr_val and atr_val > 0:
                         risk_amount = portfolio.total_value * self.config.position_risk_pct
@@ -1013,42 +1301,44 @@ class DhanLiveTrader:
                         quantity = min(risk_amount / stop_distance, max_value / price)
                     else:
                         quantity = max_value / price
+                    quantity = float(int(quantity))
 
                     risk = self.risk_manager.check_buy(portfolio, base, quantity, price)
                     if not risk.allowed:
-                        print(f"  [DHAN] BUY blocked for {ticker} [{strat.name}]: {risk.reason}")
-                        continue
-
-                    order = self.submit_buy(ticker, quantity)
-                    if order:
-                        print(
-                            f"  [DHAN] BUY  {ticker} x{order['qty']} "
-                            f"@ ~{order.get('filled_avg_price', 'MKT')}  [{strat.name}]"
-                        )
-                        self._notify(
-                            format_buy_msg(
-                                ticker, order["qty"], order.get("filled_avg_price"),
-                                strat.name, portfolio.total_value
+                        print(f"  [DHAN] BUY blocked for {ticker} [{vote_label}]: {risk.reason}")
+                    else:
+                        order = self.submit_buy(ticker, quantity)
+                        if order:
+                            print(
+                                f"  [DHAN] BUY  {ticker} x{order['qty']} "
+                                f"@ ~{order.get('filled_avg_price', 'MKT')}  [{vote_label}]"
                             )
-                        )
-                        # Mark position in portfolio so next strategy sees it
-                        entry_price = order.get("filled_avg_price") or price
-                        portfolio.positions[base] = Position(
-                            ticker=base,
-                            quantity=order["qty"],
-                            avg_entry_price=entry_price,
-                            entry_date=datetime.now(),
-                        )
-                        # Place broker-level stop-loss and take-profit orders
-                        self._place_sl_tp_orders(ticker, base, order["qty"], entry_price)
-                        # Stop processing further strategies — position just opened
-                        break
+                            self._notify(
+                                format_buy_msg(
+                                    ticker, order["qty"], order.get("filled_avg_price"),
+                                    vote_label, portfolio.total_value
+                                )
+                            )
+                            # Debit cash so total_value stays invariant across
+                            # the fill (otherwise the daily-loss limiter mis-fires).
+                            entry_price = order.get("filled_avg_price") or price
+                            self._record_fill(base, "BUY", order["qty"], price, order)
+                            portfolio.current_cash -= order["qty"] * entry_price
+                            portfolio.positions[base] = Position(
+                                ticker=base,
+                                quantity=order["qty"],
+                                avg_entry_price=entry_price,
+                                entry_date=datetime.now(),
+                            )
+                            # Start trailing-stop tracking for this position
+                            self.risk_manager.mark_entry(base, entry_price)
+                            # Place broker-level stop-loss and take-profit orders
+                            self._place_sl_tp_orders(ticker, base, order["qty"], entry_price)
 
-                elif result.signal == Signal.SELL:
-                    pos = portfolio.positions.get(base)
-                    if pos is None or pos.quantity <= 0:
-                        continue
-
+            elif (consensus == Signal.SELL and base in portfolio.positions
+                  and not self.config.disable_strategy_sells):
+                pos = portfolio.positions.get(base)
+                if pos is not None and pos.quantity > 0:
                     # Cancel SL/TP orders before selling (they're no longer needed)
                     self.cancel_sl_tp_orders(ticker)
 
@@ -1056,7 +1346,7 @@ class DhanLiveTrader:
                     if order:
                         print(
                             f"  [DHAN] SELL {ticker} x{order['qty']} "
-                            f"@ ~{order.get('filled_avg_price', 'MKT')}  [{strat.name}]"
+                            f"@ ~{order.get('filled_avg_price', 'MKT')}  [{vote_label}]"
                         )
                         # Calculate P&L if possible
                         pnl = None
@@ -1066,24 +1356,35 @@ class DhanLiveTrader:
                         self._notify(
                             format_sell_msg(
                                 ticker, order["qty"], order.get("filled_avg_price"),
-                                strat.name, pnl
+                                vote_label, pnl
                             )
                         )
-                        # Remove from portfolio
+                        # Credit cash and remove from portfolio (keeps
+                        # total_value invariant across the fill)
+                        self._record_fill(base, "SELL", order["qty"], price, order)
+                        portfolio.current_cash += order["qty"] * (exit_price or price)
                         del portfolio.positions[base]
-                        # Stop processing further strategies — position just closed
-                        break
+                        self._last_exit_time[base] = datetime.now()
+                        self.risk_manager.clear_entry(base)
 
-            # Check stop-loss / take-profit
+            # Check stop-loss / take-profit / trailing stop. The peak must be
+            # refreshed with the current price first, or the trailing stop
+            # never moves and can never fire.
             if base in portfolio.positions:
-                risk = self.risk_manager.check_sell(portfolio, base, price)
+                self.risk_manager.update_trailing_stop(base, price)
+                risk = self.risk_manager.check_sell(portfolio, base, price,
+                                                    atr_value=atr_val or 0.0)
                 if risk.action == RiskAction.STOP_LOSS:
                     pos = portfolio.positions[base]
                     self.cancel_sl_tp_orders(ticker)
                     order = self.submit_sell(ticker, pos.quantity)
                     if order:
                         print(f"  [DHAN] STOP-LOSS {ticker}: {risk.reason}")
+                        self._record_fill(base, "SELL", order["qty"], price, order)
+                        portfolio.current_cash += order["qty"] * (order.get("filled_avg_price") or price)
                         del portfolio.positions[base]
+                        self._last_exit_time[base] = datetime.now()
+                        self.risk_manager.clear_entry(base)
                         self._notify(
                             format_sl_msg(ticker, risk.reason, self.strategy.name)
                         )
@@ -1093,7 +1394,11 @@ class DhanLiveTrader:
                     order = self.submit_sell(ticker, pos.quantity)
                     if order:
                         print(f"  [DHAN] TAKE-PROFIT {ticker}: {risk.reason}")
+                        self._record_fill(base, "SELL", order["qty"], price, order)
+                        portfolio.current_cash += order["qty"] * (order.get("filled_avg_price") or price)
                         del portfolio.positions[base]
+                        self._last_exit_time[base] = datetime.now()
+                        self.risk_manager.clear_entry(base)
                         self._notify(
                             format_tp_msg(ticker, risk.reason, self.strategy.name)
                         )
@@ -1103,7 +1408,11 @@ class DhanLiveTrader:
                     order = self.submit_sell(ticker, pos.quantity)
                     if order:
                         print(f"  [DHAN] TRAILING-STOP {ticker}: {risk.reason}")
+                        self._record_fill(base, "SELL", order["qty"], price, order)
+                        portfolio.current_cash += order["qty"] * (order.get("filled_avg_price") or price)
                         del portfolio.positions[base]
+                        self._last_exit_time[base] = datetime.now()
+                        self.risk_manager.clear_entry(base)
                         self._notify(
                             format_sell_msg(
                                 ticker, order["qty"], order.get("filled_avg_price"),
@@ -1116,7 +1425,7 @@ class DhanLiveTrader:
             # ── Time-based exit for stale intraday positions ─────────
             # If a position has been held too long with minimal profit,
             # exit to free up capital for better opportunities.
-            if self.config.intraday and base in portfolio.positions:
+            if self.config.intraday and base in portfolio.positions and base not in self._cnc_holdings:
                 pos = portfolio.positions[base]
                 hold_minutes = (datetime.now() - pos.entry_date).total_seconds() / 60.0
                 if hold_minutes >= self.config.max_hold_minutes:
@@ -1128,7 +1437,11 @@ class DhanLiveTrader:
                             pnl = (order.get("filled_avg_price", 0) - pos.avg_entry_price) * pos.quantity if order.get("filled_avg_price") and pos.avg_entry_price > 0 else None
                             print(f"  [DHAN] TIME-EXIT {ticker}: Held {hold_minutes:.0f}m, "
                                   f"P&L {pnl_pct:+.2%} < {self.config.min_profit_threshold_pct:.1%} threshold")
+                            self._record_fill(base, "SELL", order["qty"], price, order)
+                            portfolio.current_cash += order["qty"] * (order.get("filled_avg_price") or price)
                             del portfolio.positions[base]
+                            self._last_exit_time[base] = datetime.now()
+                            self.risk_manager.clear_entry(base)
                             self._notify(
                                 format_sell_msg(
                                     ticker, order["qty"], order.get("filled_avg_price"),
@@ -1171,7 +1484,7 @@ class DhanLiveTrader:
                   If False, loop forever at poll_interval_seconds.
         """
         dhan = self._init_client()
-        mode = "SANDBOX" if self.config.sandbox else "LIVE"
+        mode = getattr(self, "_mode_label", "") or ("SANDBOX" if self.config.sandbox else "LIVE")
 
         # Print account summary
         try:
@@ -1188,6 +1501,23 @@ class DhanLiveTrader:
                 print(f"  Interval:     {self.config.intraday_interval} (INTRADAY — MIS orders)")
                 print(f"  Auto-exit:    {self.config.max_hold_minutes}min stale | Stop-buy: 15:00 | Square-off: 15:10")
                 print(f"  Vol filter:   ATR/close >= {self.config.min_volatility_pct:.1%}")
+            # Report the RISK MANAGER's actual values, not the config's. A
+            # caller can pass an explicit risk_manager that overrides config,
+            # which is exactly how a 2.0 ATR trail silently replaced the
+            # intended 0.8% pct trail on 2026-08-03. Print the truth.
+            rm = self.risk_manager
+            if self.config.disable_strategy_sells or rm.trailing_stop_enabled:
+                exit_by = ("trailing stop only (strategy SELLs ignored)"
+                           if self.config.disable_strategy_sells else "strategy SELL + trailing stop")
+                print(f"  Exit policy:  {exit_by}")
+                if rm.trailing_stop_enabled:
+                    if rm.trailing_stop_atr_mult > 0:
+                        print(f"  Trailing:     {rm.trailing_stop_atr_mult}x ATR below peak "
+                              f"(ATR mode — pct {rm.trailing_stop_pct:.2%} is IGNORED)")
+                    else:
+                        print(f"  Trailing:     {rm.trailing_stop_pct:.2%} below peak")
+                else:
+                    print("  Trailing:     DISABLED — nothing will exit early!")
             print()
         except Exception as e:
             print(f"\n=== Dhan Live Trader ({mode}) === (balance unavailable: {e})\n")
@@ -1226,14 +1556,72 @@ class DhanLiveTrader:
                 )
             )
 
+            waiting_logged = False
+            market_was_open = False
+            last_cycle_wall = time.time()
             try:
                 while True:
+                    # Detect a long stall between cycles. Cycles should be ~poll
+                    # interval apart; a multi-minute jump means the process was
+                    # suspended (laptop power-saving / modern standby) — which
+                    # silently skips the trading window. Surface it in the log.
+                    gap = time.time() - last_cycle_wall
+                    if gap > max(300, self.config.poll_interval_seconds * 4):
+                        print(f"  [WARN] {gap/60:.0f} min gap since last cycle — the bot was "
+                              f"paused (laptop sleep/power-saving?). Intraday needs it running "
+                              f"continuously; see power settings.")
+                    last_cycle_wall = time.time()
                     if not self._is_market_open():
                         now = self._ist_now()
-                        print(f"  [{now.strftime('%H:%M')}] Market closed — waiting...")
+                        # Market just closed after a trading session — send the
+                        # end-of-day summary once, before going quiet.
+                        if market_was_open:
+                            try:
+                                self._send_daily_summary()
+                            except Exception as e:
+                                print(f"  [summary] failed: {e}")
+                            market_was_open = False
+                        # Log the "waiting" line once per closed-market stretch,
+                        # not every minute, so the console isn't flooded overnight.
+                        if not waiting_logged:
+                            print(f"  [{now.strftime('%H:%M')}] Market closed — waiting for 09:15 IST...")
+                            waiting_logged = True
                         time.sleep(60)  # check every minute
                         continue
-                    self.run_once(tickers)
+                    waiting_logged = False
+                    market_was_open = True
+                    signals = self.run_once(tickers)
+                    # Heartbeat: continuous mode is otherwise silent when every
+                    # strategy says HOLD, which looks like the bot has frozen.
+                    now = self._ist_now()
+                    notable = [f"{t}=[{s}]" for t, s in (signals or {}).items()
+                               if s and ("BUY" in s or "SELL" in s)]
+                    if notable:
+                        print(f"  [{now.strftime('%H:%M')}] " + "  ".join(notable))
+                    else:
+                        n = len(signals or {})
+                        print(f"  [{now.strftime('%H:%M')}] cycle ok — {n} ticker(s) evaluated, no entries (all HOLD)")
                     time.sleep(self.config.poll_interval_seconds)
             except KeyboardInterrupt:
                 print("\n  Dhan live trader stopped by user.")
+
+    # ------------------------------------------------------------------
+    # End-of-day summary
+    # ------------------------------------------------------------------
+
+    def _send_daily_summary(self) -> None:
+        """Send an end-of-day summary via the notifier.
+
+        Base implementation reports the account equity. DhanPaperTrader
+        overrides this with full trade statistics from its virtual ledger.
+        """
+        acct = self.get_account_info()
+        equity = acct.get("equity", 0.0)
+        day = self._ist_now().strftime("%Y-%m-%d")
+        msg = format_daily_summary(
+            getattr(self, "_mode_label", "") or ("SANDBOX" if self.config.sandbox else "LIVE"),
+            day, total_trades=0, closed_trades=0, wins=0, realized_pnl=0.0,
+            equity=equity, initial_capital=self.config.initial_capital, open_positions=[],
+        )
+        print(f"  [SUMMARY] {day}: equity Rs {equity:,.2f}")
+        self._notify(msg)

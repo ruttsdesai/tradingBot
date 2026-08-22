@@ -38,6 +38,16 @@ python cli.py backtest --csv ./reports
 ```
 
 ```bash
+# Day-trading backtest: 5m bars + live NSE intraday rules
+# (no buys after 15:00, square-off 15:10, time-exits, volatility filter)
+# NOTE: yfinance caps 5m history at ~60 days — weeks of data, not years
+python cli.py backtest-intraday                        # all Dhan tickers, all strategies
+python cli.py backtest-intraday -t SBIN.NS -s macd     # one ticker + strategy
+python cli.py backtest-intraday -i 15m -d 55           # 15-minute bars
+python cli.py backtest-intraday --csv reports/intraday.csv
+```
+
+```bash
 # Benchmark: rank all strategies by Sharpe/Sortino/Return
 python cli.py benchmark                  # stocks + crypto
 python cli.py benchmark --stocks         # stocks only
@@ -72,6 +82,64 @@ python cli.py portfolio
 
 # Fetch market data
 python cli.py data -t AAPL -y 10
+```
+
+---
+
+## ⚡ Parallel Day Trading (5 strategies, one chart, one decision)
+
+All 5 strategies run in parallel on every intraday bar of a single symbol.
+Votes are weighted by each strategy's recent profitability on that exact
+chart; the bot BUYs on weighted consensus, SELLs on consensus loss /
+stop-loss / take-profit, and always squares off before the session close.
+
+```bash
+# Backtest 60 days of 5m bars on AAPL, save the parallel-strategy chart
+python cli.py day-trade -t AAPL
+
+# Different symbol / interval / history depth
+python cli.py day-trade -t NVDA -i 15m -d 30
+python cli.py day-trade -t RELIANCE.NS -i 5m
+
+# Compare the combined engine vs each strategy standalone + buy & hold
+python cli.py day-trade -t AAPL --compare
+
+# What would the bot do RIGHT NOW? (run every few minutes during market hours)
+python cli.py day-trade -t AAPL --signal --no-chart
+
+# Backtest a local OHLCV CSV (offline)
+python cli.py day-trade -t MYDATA --csv-file data/synthetic/uptrend_5m.csv
+
+# Offline validation on synthetic regimes (also a regression test)
+python scripts/validate_day_trade.py
+python scripts/validate_day_trade.py --save-csv   # writes data/synthetic/*.csv
+```
+
+Tune thresholds, adaptive weighting, square-off, and intraday risk limits in
+the `day_trading:` section of `config.yaml`.
+
+---
+
+## 🧪 Forward Paper Trading — India NSE (zero cost, no credentials)
+
+Same loop as dhan-live (live prices, same strategies/risk/square-off rules)
+but fills are simulated and the virtual portfolio persists to
+`state/dhan_paper_state.json` across restarts.
+
+```bash
+# Continuous paper trading on the evidence-backed winner set (run during market hours)
+python cli.py dhan-live --paper -t AXISBANK.NS -t ASIANPAINT.NS -t BAJFINANCE.NS \
+    -t M&M.NS -t SUNPHARMA.NS -t KOTAKBANK.NS \
+    -s rsi_mean_revert -s bollinger_bands -s ma_crossover
+
+# One evaluation cycle, all 5 strategies, default tickers
+python cli.py dhan-live --paper --all --once
+
+# Custom virtual capital (default Rs 10,000)
+python cli.py dhan-live --paper --all --capital 50000
+
+# Inspect the virtual portfolio, realized P&L, and trade log
+python cli.py paper-status
 ```
 
 ---

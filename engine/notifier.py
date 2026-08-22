@@ -93,43 +93,61 @@ class TelegramUserNotifier:
     def is_enabled(self) -> bool:
         return self._enabled
 
-    def _get_client(self):
-        """Lazily create and connect a Telethon client."""
-        if self._client is not None:
-            return self._client
-
-        from telethon import TelegramClient
-        self._client = TelegramClient(self.session_file, self.api_id, self.api_hash)
-        return self._client
-
     async def _async_send(self, message: str) -> bool:
-        """Async send message to Saved Messages."""
-        client = self._get_client()
-        await client.start()  # no-op if session is valid; prompts if first run
-        await client.send_message("me", message)
-        return True
+        """Connect a fresh client, send to Saved Messages, disconnect cleanly.
+
+        A brand-new client per call keeps each send self-contained: it never
+        reuses a client bound to an already-closed event loop (which broke the
+        2nd+ send of a session), and disconnecting before the loop closes stops
+        Telethon's background tasks from spewing 'Event loop is closed' noise on
+        teardown (notably on Python 3.14).
+        """
+        from telethon import TelegramClient
+
+        client = TelegramClient(self.session_file, self.api_id, self.api_hash)
+        try:
+            await client.connect()
+            if not await client.is_user_authorized():
+                # No valid session yet — do the interactive login. This only
+                # happens during `telegram-setup`; runtime sends skip it.
+                await client.start()
+            await client.send_message("me", message)
+            return True
+        finally:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
 
     def send(self, message: str) -> bool:
         """Send a message to your Saved Messages via Telethon.
 
-        First call will prompt for phone number + verification code
-        in the terminal. Subsequent calls reuse the saved session.
+        First call (during telegram-setup) prompts for phone number +
+        verification code in the terminal. Later calls reuse the saved session.
 
         Returns True if sent, False if disabled/failed.
         """
         if not self._enabled:
             return False
 
+        loop = None
         try:
             import asyncio
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            result = loop.run_until_complete(self._async_send(message))
-            loop.close()
-            return result
+            return loop.run_until_complete(self._async_send(message))
         except Exception as e:
             print(f"  [NOTIFIER] Telegram send failed: {e}")
             return False
+        finally:
+            if loop is not None:
+                # Let disconnect()'s cancelled tasks settle before closing the
+                # loop, so teardown stays quiet.
+                try:
+                    loop.run_until_complete(asyncio.sleep(0))
+                except Exception:
+                    pass
+                loop.close()
 
 
 # ---------------------------------------------------------------------------
@@ -193,3 +211,20 @@ def format_session_start(mode: str, strategy: str, tickers: list[str],
 def format_error(msg: str) -> str:
     """Format an error notification."""
     return f"⚠️ *Error*: {msg}"
+
+
+def format_daily_summary(mode: str, day: str, total_trades: int, closed_trades: int,
+                         wins: int, realized_pnl: float, equity: float,
+                         initial_capital: float, open_positions: list[str]) -> str:
+    """Format an end-of-day summary notification."""
+    win_rate = (wins / closed_trades * 100) if closed_trades else 0.0
+    total_ret = ((equity - initial_capital) / initial_capital * 100) if initial_capital else 0.0
+    pnl_emoji = "🟢" if realized_pnl > 0 else ("🔴" if realized_pnl < 0 else "⚪")
+    pos_str = ", ".join(open_positions) if open_positions else "none (flat)"
+    return (
+        f"{pnl_emoji} *Day Summary ({mode})* — {day}\\n"
+        f"Realized P&L: Rs {realized_pnl:+,.2f}\\n"
+        f"Trades: {total_trades} ({closed_trades} closed, {win_rate:.0f}% win)\\n"
+        f"Equity: Rs {equity:,.2f} ({total_ret:+.2f}% since start)\\n"
+        f"Open overnight: {pos_str}"
+    )
