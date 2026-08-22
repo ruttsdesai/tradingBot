@@ -57,3 +57,6 @@ logs/
 # Lab cached bars + experiment outputs
 data/lab_cache/
 lab/results/
+
+# Cross-sectional universe cache (re-fetchable; ~40 tickers x 2 intervals)
+data/xsec_cache/
