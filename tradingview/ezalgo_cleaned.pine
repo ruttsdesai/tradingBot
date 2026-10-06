@@ -82,6 +82,9 @@ f_pct(float x) =>
     (x >= 0 ? "+" : "") + str.tostring(x * 100, "0.00") + "%"
 
 f_exitLabel(float px, float ret, string why) =>
+    string msg = "EzTrades+ " + syminfo.ticker + ": " + why + " exit at " +
+         str.tostring(px, format.mintick) + ", trade " + f_pct(ret) + " net"
+    alert(msg, alert.freq_once_per_bar_close)
     label.new(bar_index, px, why + " " + f_pct(ret),
          style = ret >= 0 ? label.style_label_down : label.style_label_up,
          color = ret >= 0 ? color.new(color.teal, 15) : color.new(color.red, 15),
@@ -136,6 +139,18 @@ var float sigHigh = na
 var float sigLow = na
 var float sigAtr = na
 
+// Exit events for alertcondition(). Plain (non-var) so they reset every bar.
+bool evExitSig = false
+bool evSL = false
+bool evTP = false
+bool evSq = false
+
+// LIVE warnings: fire mid-candle the moment price touches the level, instead
+// of waiting for the close. Evaluated against the position held at the last
+// close, so they never fire on a trade that is not open yet.
+bool stopTouchLive = not barstate.isconfirmed and useStop and ((pos == 1 and low <= stopPx) or (pos == -1 and high >= stopPx))
+bool tgtTouchLive  = not barstate.isconfirmed and not na(tgtPx) and ((pos == 1 and high >= tgtPx) or (pos == -1 and low <= tgtPx))
+
 var int   nTr = 0
 var int   nWin = 0
 var float sumR = 0.0
@@ -152,6 +167,7 @@ if barstate.isconfirmed
         grossW += math.max(r, 0.0)
         grossL += math.max(-r, 0.0)
         f_exitLabel(open, r, "15:10")
+        evSq := true
         pos := 0
 
     // 2. Orders from the previous bar's signal fill at this bar's open
@@ -191,6 +207,7 @@ if barstate.isconfirmed
             grossW += math.max(r, 0.0)
             grossL += math.max(-r, 0.0)
             f_exitLabel(px, r, "SL")
+            evSL := true
             pos := 0
         else if not na(tgtPx) and high >= tgtPx
             float px = math.max(open, tgtPx)
@@ -201,6 +218,7 @@ if barstate.isconfirmed
             grossW += math.max(r, 0.0)
             grossL += math.max(-r, 0.0)
             f_exitLabel(px, r, tpSel)
+            evTP := true
             pos := 0
     else if pos == -1
         if useStop and high >= stopPx
@@ -212,6 +230,7 @@ if barstate.isconfirmed
             grossW += math.max(r, 0.0)
             grossL += math.max(-r, 0.0)
             f_exitLabel(px, r, "SL")
+            evSL := true
             pos := 0
         else if not na(tgtPx) and low <= tgtPx
             float px = math.min(open, tgtPx)
@@ -222,6 +241,7 @@ if barstate.isconfirmed
             grossW += math.max(r, 0.0)
             grossL += math.max(-r, 0.0)
             f_exitLabel(px, r, tpSel)
+            evTP := true
             pos := 0
 
     // 4. This bar's signal becomes an order for the next bar's open
@@ -229,11 +249,13 @@ if barstate.isconfirmed
     if bull
         if pos == -1
             pendExit := true
+            evExitSig := true
         if pos != 1 and canEnter and (not useTrend or close > ema200)
             pendDir := 1
     if bear
         if pos == 1
             pendExit := true
+            evExitSig := true
         if allowShort and pos != -1 and canEnter and (not useTrend or close < ema200)
             pendDir := -1
     if pendDir != 0
@@ -410,3 +432,10 @@ plotshape(enrevser and exShort == 1 and barstate.isconfirmed, "QQE down", shape.
 // =============================================================== alerts ====
 alertcondition(buyConf, "Buy (confirmed)", "EzTrades+ Buy on {{ticker}} at {{close}}")
 alertcondition(sellConf, "Sell (confirmed)", "EzTrades+ Sell on {{ticker}} at {{close}}")
+alertcondition(evExitSig, "Exit signal (close at next open)", "EzTrades+ {{ticker}}: closing signal confirmed at {{close}} - exit at next open")
+alertcondition(evSL, "Stop-loss hit", "EzTrades+ {{ticker}}: stop-loss hit")
+alertcondition(evTP, "Target hit", "EzTrades+ {{ticker}}: target hit")
+alertcondition(evSq, "15:10 square-off", "EzTrades+ {{ticker}}: 15:10 square-off")
+alertcondition(evExitSig or evSL or evTP or evSq, "Any exit", "EzTrades+ {{ticker}}: position closed or closing")
+alertcondition(stopTouchLive, "Stop touched - LIVE", "EzTrades+ {{ticker}}: price touching stop-loss NOW at {{close}}")
+alertcondition(tgtTouchLive, "Target touched - LIVE", "EzTrades+ {{ticker}}: price touching target NOW at {{close}}")

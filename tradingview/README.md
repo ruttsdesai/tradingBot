@@ -159,5 +159,36 @@ cloud, bands, diamonds, QQE and S&R layers are visual context.
 | Walk-forward over 160 settings × 4 timeframes | **no setting positive on held-out data with significance** |
 | Daily long-only, 5 years | +0.1%/yr vs +5.8%/yr buy-and-hold |
 
+**Alerts** (right-click chart → Add alert → Condition: *EzAlgo (cleaned)*)
+
+| Alert | Fires | Frequency to choose |
+|---|---|---|
+| Buy / Sell (confirmed) | at the close of the signal candle | Once per bar close |
+| Exit signal | closing signal confirmed — exit at next open | Once per bar close |
+| Stop-loss hit / Target hit / 15:10 square-off | at the close of the candle it happened in | Once per bar close |
+| Any exit | any of the above | Once per bar close |
+| **Stop touched – LIVE / Target touched – LIVE** | **mid-candle, the moment price touches the level** | **Once per bar** |
+| *Any alert() function call* | every exit, with reason, price and net P&L in the message | — |
+
+The LIVE alerts exist because the chart labels only appear at candle close. They
+are a warning, not protection: put the real stop in Dhan as an order.
+
+**Multiple TP / SL levels — tested, not added.** Ten exit ladders (1–3 targets,
+scale-outs, breakeven after TP1, 1–3 staged stops, the full ladder) on the same
+signal and fills:
+
+| | best ladder vs baseline (net, bp/trade) |
+|---|---|
+| 5m | −9.92 vs −9.99 — every variant within ±1bp |
+| 15m | −13.59 vs −14.37 — all lose |
+| Daily long-only | **every target ladder is worse** (+7 to +13 vs +17.6, none significant) |
+
+Ladders change the *shape* of results (win rate, size of wins) but not the
+expectancy, and a zero-edge signal stays zero. On daily bars targets actively
+hurt: trend following lives off a few large winners, and targets cap them.
+Breakeven stops did nothing at all on 5m, because by the time TP1 is reached the
+Supertrend line is already above entry in 95% of trades — the signal exit
+always fires first. The indicator's own line is already a trailing stop.
+
 Use it for chart context if you like it. Don't take entries from it — and if
 you do, the stats panel will tell you what it is costing.
