@@ -1,0 +1,412 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// Original: "EzAlgo" (c) Pineify. Modified: bug fixes, non-repainting signals,
+// honest trade tracking (every exit shown, stats net of costs).
+
+//@version=6
+indicator("EzAlgo (cleaned)", shorttitle = "EzTrades+", overlay = true, max_labels_count = 500, max_lines_count = 100)
+
+// =============================================================== inputs ====
+grpSig = "Buy & Sell"
+enSignals = input.bool(true, "Show Buy / Sell", group = grpSig)
+sens      = input.float(2.0, "Signal distance (x ATR)", minval = 0.5, step = 0.5, group = grpSig,
+     tooltip = "Higher = fewer, later signals. Was mislabelled 'Sensitivity' (it worked backwards).")
+atrLenSig = input.int(11, "Signal ATR length", minval = 1, group = grpSig)
+srcSel    = input.string("close (original)", "Band source", options = ["close (original)", "hl2 (standard Supertrend)"], group = grpSig)
+useTrend  = input.bool(false, "Only trade with the 200-EMA trend", group = grpSig,
+     tooltip = "Tested out-of-sample on 20 NSE large caps: roughly halves the loss on 15m, still negative after costs.")
+allowShort = input.bool(true, "Track shorts (Sell opens a short)", group = grpSig,
+     tooltip = "Off = a Sell only closes a long. NSE cash shorts are intraday (MIS) only.")
+
+grpRisk = "Trade tracking"
+costPct   = input.float(0.05, "Cost per side (%)", minval = 0.0, step = 0.01, group = grpRisk,
+     tooltip = "Brokerage + taxes + slippage per fill. ~0.05% for Dhan intraday, ~0.11% for delivery.")
+useStop   = input.bool(true, "Use stop-loss", group = grpRisk)
+stopMult  = input.float(4.0, "Stop distance (x ATR 14)", minval = 0.5, step = 0.5, group = grpRisk,
+     tooltip = "Was mislabelled 'Risk To Reward'. It is how far the stop sits, in ATRs, beyond the signal bar.")
+tpSel     = input.string("None (exit on signal)", "Exit at target", options = ["None (exit on signal)", "TP1", "TP2", "TP3"], group = grpRisk)
+r1        = input.float(0.7, "TP1 (R multiple)", step = 0.1, group = grpRisk)
+r2        = input.float(1.2, "TP2 (R multiple)", step = 0.1, group = grpRisk)
+r3        = input.float(1.5, "TP3 (R multiple)", step = 0.1, group = grpRisk)
+showLvls  = input.bool(true, "Draw entry / stop / targets for the open trade", group = grpRisk)
+nseMode   = input.bool(true, "NSE intraday rules (no entries after 15:00, flat at 15:10 IST)", group = grpRisk,
+     tooltip = "Applies on intraday charts only. Turn off for crypto or for holding overnight.")
+showStats = input.bool(true, "Show stats panel", group = grpRisk)
+
+grpVis = "Visuals"
+enCloud  = input.bool(true, "Trend ribbon", group = grpVis)
+volBands = input.bool(true, "Show bands", group = grpVis)
+mal      = input.bool(false, "Trend moving average line", group = grpVis, inline = "ma")
+mals     = input.int(80, "", group = grpVis, inline = "ma")
+enrev    = input.bool(true, "Diamond signals (Donchian break)", group = grpVis)
+enrevser = input.bool(true, "QQE signals", group = grpVis)
+ensr     = input.bool(true, "Support / resistance levels", group = grpVis)
+ensra    = input.bool(true, "Support / resistance zones", group = grpVis)
+
+grpQqe = "QQE signals"
+RSI_Period = input.int(14, "RSI length", group = grpQqe)
+SF         = input.int(5, "RSI smoothing", group = grpQqe)
+KQE        = input.float(4.238, "Band factor", group = grpQqe)
+
+// ============================================================ functions ====
+// Same algorithm as the original (TradingView's reference Supertrend), with
+// the band source made selectable.
+f_supertrend(float src, float factor, int len) =>
+    float atrv = ta.atr(len)
+    float upper = src + factor * atrv
+    float lower = src - factor * atrv
+    float prevLower = nz(lower[1])
+    float prevUpper = nz(upper[1])
+    lower := lower > prevLower or close[1] < prevLower ? lower : prevLower
+    upper := upper < prevUpper or close[1] > prevUpper ? upper : prevUpper
+    int dir = na
+    float stv = na
+    float prevSt = stv[1]
+    if na(atrv[1])
+        dir := 1
+    else if prevSt == prevUpper
+        dir := close > upper ? -1 : 1
+    else
+        dir := close < lower ? 1 : -1
+    stv := dir == -1 ? lower : upper
+    [stv, dir]
+
+f_kc(float src, int len, float mult) =>
+    float basis = ta.ema(src, len)
+    float span = ta.ema(ta.tr, len)
+    [basis + span * mult, basis - span * mult]
+
+f_donchian(int len) =>
+    math.avg(ta.lowest(len), ta.highest(len))
+
+f_pct(float x) =>
+    (x >= 0 ? "+" : "") + str.tostring(x * 100, "0.00") + "%"
+
+f_exitLabel(float px, float ret, string why) =>
+    label.new(bar_index, px, why + " " + f_pct(ret),
+         style = ret >= 0 ? label.style_label_down : label.style_label_up,
+         color = ret >= 0 ? color.new(color.teal, 15) : color.new(color.red, 15),
+         textcolor = color.white, size = size.tiny)
+
+// ============================================================== signals ====
+float srcVal = srcSel == "hl2 (standard Supertrend)" ? hl2 : close
+[stLine, stDir] = f_supertrend(srcVal, sens, atrLenSig)
+ema200 = ta.ema(close, 200)
+atr14  = ta.atr(14)
+
+bull = ta.crossover(close, stLine)
+bear = ta.crossunder(close, stLine)
+
+// Only CONFIRMED (closed) bars count. The original drew labels on the live
+// bar, so a Buy could appear mid-candle and vanish -- history then looked
+// cleaner than what you saw in real time.
+buyConf  = bull and barstate.isconfirmed
+sellConf = bear and barstate.isconfirmed
+
+plotshape(enSignals and buyConf, "Buy", shape.labelup, location.belowbar, color.new(#00DBFF, 0), text = "Buy", textcolor = color.white, size = size.normal)
+plotshape(enSignals and sellConf, "Sell", shape.labeldown, location.abovebar, color.new(#E93E63, 0), text = "Sell", textcolor = color.white, size = size.normal)
+
+// Warn, without committing, while a signal is still forming on the live bar.
+plotshape(enSignals and bull and not barstate.isconfirmed, "Buy forming", shape.triangleup, location.belowbar, color.new(#00DBFF, 60), size = size.tiny)
+plotshape(enSignals and bear and not barstate.isconfirmed, "Sell forming", shape.triangledown, location.abovebar, color.new(#E93E63, 60), size = size.tiny)
+
+barcolor(close > stLine ? #00DBFF99 : #E93E6399)
+
+// ======================================================= trade tracking ====
+// Simulates trading every confirmed signal: fill at the NEXT bar's open,
+// exit on the opposite signal, the stop, the chosen target, or 15:10 IST.
+// Every exit is drawn with its net P&L -- losses included. The original only
+// marked target hits and never showed a losing exit.
+cost = costPct / 100.0
+int bm = hour(time, "Asia/Kolkata") * 60 + minute(time, "Asia/Kolkata")
+bool nseOn = nseMode and timeframe.isintraday
+bool sqOffBar = nseOn and bm >= 15 * 60 + 10
+bool lateBar  = nseOn and bm >= 15 * 60
+
+var int   pos = 0
+var float entryPx = na
+var int   entryBar = na
+var float stopPx = na
+var float tp1Px = na
+var float tp2Px = na
+var float tp3Px = na
+var float tgtPx = na
+var bool  pendExit = false
+var int   pendDir = 0
+var float sigHigh = na
+var float sigLow = na
+var float sigAtr = na
+
+var int   nTr = 0
+var int   nWin = 0
+var float sumR = 0.0
+var float grossW = 0.0
+var float grossL = 0.0
+
+if barstate.isconfirmed
+    // 1. NSE square-off at the open of the 15:10 bar
+    if sqOffBar and pos != 0
+        float r = pos * (open - entryPx) / entryPx - 2 * cost
+        nTr += 1
+        nWin += r > 0 ? 1 : 0
+        sumR += r
+        grossW += math.max(r, 0.0)
+        grossL += math.max(-r, 0.0)
+        f_exitLabel(open, r, "15:10")
+        pos := 0
+
+    // 2. Orders from the previous bar's signal fill at this bar's open
+    if pendExit or pendDir != 0
+        if not sqOffBar
+            if pendExit and pos != 0
+                float r = pos * (open - entryPx) / entryPx - 2 * cost
+                nTr += 1
+                nWin += r > 0 ? 1 : 0
+                sumR += r
+                grossW += math.max(r, 0.0)
+                grossL += math.max(-r, 0.0)
+                f_exitLabel(open, r, "Exit")
+                pos := 0
+            if pendDir != 0 and pos == 0
+                pos := pendDir
+                entryPx := open
+                entryBar := bar_index
+                stopPx := pendDir == 1 ? sigLow - stopMult * sigAtr : sigHigh + stopMult * sigAtr
+                float risk = math.abs(entryPx - stopPx)
+                tp1Px := entryPx + pendDir * risk * r1
+                tp2Px := entryPx + pendDir * risk * r2
+                tp3Px := entryPx + pendDir * risk * r3
+                tgtPx := tpSel == "TP1" ? tp1Px : tpSel == "TP2" ? tp2Px : tpSel == "TP3" ? tp3Px : na
+        pendExit := false
+        pendDir := 0
+
+    // 3. Stop / target inside this bar. Stop is checked first (conservative),
+    //    and a gap through a level fills at the open, not at the level.
+    if pos == 1
+        if useStop and low <= stopPx
+            float px = math.min(open, stopPx)
+            float r = (px - entryPx) / entryPx - 2 * cost
+            nTr += 1
+            nWin += r > 0 ? 1 : 0
+            sumR += r
+            grossW += math.max(r, 0.0)
+            grossL += math.max(-r, 0.0)
+            f_exitLabel(px, r, "SL")
+            pos := 0
+        else if not na(tgtPx) and high >= tgtPx
+            float px = math.max(open, tgtPx)
+            float r = (px - entryPx) / entryPx - 2 * cost
+            nTr += 1
+            nWin += r > 0 ? 1 : 0
+            sumR += r
+            grossW += math.max(r, 0.0)
+            grossL += math.max(-r, 0.0)
+            f_exitLabel(px, r, tpSel)
+            pos := 0
+    else if pos == -1
+        if useStop and high >= stopPx
+            float px = math.max(open, stopPx)
+            float r = (entryPx - px) / entryPx - 2 * cost
+            nTr += 1
+            nWin += r > 0 ? 1 : 0
+            sumR += r
+            grossW += math.max(r, 0.0)
+            grossL += math.max(-r, 0.0)
+            f_exitLabel(px, r, "SL")
+            pos := 0
+        else if not na(tgtPx) and low <= tgtPx
+            float px = math.min(open, tgtPx)
+            float r = (entryPx - px) / entryPx - 2 * cost
+            nTr += 1
+            nWin += r > 0 ? 1 : 0
+            sumR += r
+            grossW += math.max(r, 0.0)
+            grossL += math.max(-r, 0.0)
+            f_exitLabel(px, r, tpSel)
+            pos := 0
+
+    // 4. This bar's signal becomes an order for the next bar's open
+    bool canEnter = not lateBar
+    if bull
+        if pos == -1
+            pendExit := true
+        if pos != 1 and canEnter and (not useTrend or close > ema200)
+            pendDir := 1
+    if bear
+        if pos == 1
+            pendExit := true
+        if allowShort and pos != -1 and canEnter and (not useTrend or close < ema200)
+            pendDir := -1
+    if pendDir != 0
+        sigHigh := high
+        sigLow := low
+        sigAtr := atr14
+
+// Entry / stop / target lines for the OPEN trade, drawn once on the last bar
+// (the original created and deleted them on every bar and anchored them to
+// the wrong signal after a Sell).
+var array<line>  lvlLines = array.new<line>()
+var array<label> lvlLabels = array.new<label>()
+if barstate.islast
+    for l in lvlLines
+        line.delete(l)
+    for lb in lvlLabels
+        label.delete(lb)
+    array.clear(lvlLines)
+    array.clear(lvlLabels)
+    if showLvls and pos != 0
+        prices = array.from(entryPx, stopPx, tp1Px, tp2Px, tp3Px)
+        names  = array.from("Entry", "Stop", "TP1", "TP2", "TP3")
+        for i = 0 to 4
+            float p = array.get(prices, i)
+            if not na(p) and (i != 1 or useStop)
+                color c = i == 0 ? color.gray : i == 1 ? #E93E63 : #00D9FC
+                array.push(lvlLines, line.new(entryBar, p, bar_index + 5, p, color = c, width = 2))
+                array.push(lvlLabels, label.new(bar_index + 5, p, array.get(names, i) + "  " + str.tostring(p, format.mintick),
+                     style = label.style_label_left, color = color.new(c, 0), textcolor = color.white, size = size.small))
+
+// ================================================================ stats ====
+var table panel = table.new(position.bottom_right, 2, 9, border_width = 1, frame_color = color.gray, frame_width = 1)
+if showStats and barstate.islast
+    string act = enSignals and bull and not barstate.isconfirmed ? "BUY forming - wait for close"
+         : enSignals and bear and not barstate.isconfirmed ? "SELL forming - wait for close"
+         : pendDir == 1 ? "BUY - enter next open"
+         : pendDir == -1 ? "SELL - short next open"
+         : pendExit ? "EXIT next open"
+         : pos == 1 ? "LONG" : pos == -1 ? "SHORT" : "FLAT"
+    color actCol = str.contains(act, "forming") ? color.orange : pendDir == 1 or pos == 1 ? color.new(#00A8C6, 0)
+         : pendDir == -1 or pos == -1 ? color.new(#E93E63, 0) : color.gray
+    float pf = grossL > 0 ? grossW / grossL : na
+    float openR = pos != 0 ? pos * (close - entryPx) / entryPx - cost : na
+    table.cell(panel, 0, 0, "ACTION", text_color = color.white, bgcolor = actCol, text_halign = text.align_left)
+    table.cell(panel, 1, 0, act, text_color = color.white, bgcolor = actCol, text_halign = text.align_right)
+    table.cell(panel, 0, 1, "Closed trades", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
+    table.cell(panel, 1, 1, str.tostring(nTr), text_size = size.small, text_halign = text.align_right)
+    table.cell(panel, 0, 2, "Win rate", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
+    table.cell(panel, 1, 2, nTr > 0 ? str.tostring(100.0 * nWin / nTr, "0.0") + "%" : "-", text_size = size.small, text_halign = text.align_right)
+    table.cell(panel, 0, 3, "Avg net / trade", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
+    table.cell(panel, 1, 3, nTr > 0 ? f_pct(sumR / nTr) : "-", text_color = sumR >= 0 ? color.teal : color.red, text_size = size.small, text_halign = text.align_right)
+    table.cell(panel, 0, 4, "Sum of trades (net)", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
+    table.cell(panel, 1, 4, f_pct(sumR), text_color = sumR >= 0 ? color.teal : color.red, text_size = size.small, text_halign = text.align_right)
+    table.cell(panel, 0, 5, "Profit factor", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
+    table.cell(panel, 1, 5, na(pf) ? "-" : str.tostring(pf, "0.00"), text_color = na(pf) ? color.gray : pf >= 1 ? color.teal : color.red, text_size = size.small, text_halign = text.align_right)
+    table.cell(panel, 0, 6, "Open trade (net)", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
+    table.cell(panel, 1, 6, na(openR) ? "-" : f_pct(openR), text_color = na(openR) ? color.gray : openR >= 0 ? color.teal : color.red, text_size = size.small, text_halign = text.align_right)
+    table.cell(panel, 0, 7, "Cost assumed", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
+    table.cell(panel, 1, 7, str.tostring(costPct, "0.00") + "% / side", text_color = color.gray, text_size = size.small, text_halign = text.align_right)
+    table.cell(panel, 0, 8, "Fills", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
+    table.cell(panel, 1, 8, "next bar open", text_color = color.gray, text_size = size.small, text_halign = text.align_right)
+
+// ================================================================ cloud ====
+candle = ta.sma(close, 7)
+reach  = ta.sma(close, 13)
+candlep = plot(enCloud ? candle : na, color = color.new(color.white, 100), editable = false)
+reachp  = plot(enCloud ? reach : na, color = color.new(color.white, 100), editable = false)
+fill(reachp, candlep, color = candle > reach ? color.new(#00DBFF, 75) : color.new(#E93E63, 75))
+
+// ================================================================ bands ====
+// "Show bands" now actually hides them (the original plotted them regardless).
+[upperKC1, lowerKC1] = f_kc(close, 35, 4.5)
+[upperKC2, lowerKC2] = f_kc(close, 35, 6.4)
+[upperKC3, lowerKC3] = f_kc(close, 35, 8.3)
+plot(volBands ? upperKC1 : na, "", color.new(#E93E63, 75), editable = false)
+plot(volBands ? upperKC2 : na, "", color.new(#E93E63, 85), editable = false)
+plot(volBands ? upperKC3 : na, "", color.new(#E93E63, 90), editable = false)
+plot(volBands ? lowerKC1 : na, "", color.new(#00DBFF, 75), editable = false)
+plot(volBands ? lowerKC2 : na, "", color.new(#00DBFF, 85), editable = false)
+plot(volBands ? lowerKC3 : na, "", color.new(#00DBFF, 90), editable = false)
+
+// ===================================================== trend MA line ====
+maShort = ta.ema(close, 23)
+maInt   = ta.ema(close, 200)
+maLong  = ta.ema(close, mals)
+plot(mal ? maLong : na, color = maShort > maInt ? color.new(#00DBFF, 75) : color.new(#E93E63, 75), linewidth = 4)
+
+// ================================================== diamond signals ====
+conversionLine = f_donchian(5)
+baseLine       = f_donchian(2)
+leadLine1 = math.avg(conversionLine, baseLine)
+leadLine2 = f_donchian(5)
+lead1 = leadLine1[5]
+lead2 = leadLine2[5]
+crossup = ta.crossover(close, lead2)
+crossdn = ta.crossunder(close, lead2)
+breakup = lead2 > lead1 and close > open and crossup and barstate.isconfirmed
+breakdn = lead2 < lead1 and close < open and crossdn and barstate.isconfirmed
+plotshape(enrev and breakup, "Break up", shape.diamond, location.belowbar, color.new(#00DBFF, 68), size = size.tiny)
+plotshape(enrev and breakdn, "Break down", shape.diamond, location.abovebar, color.new(#E93E63, 68), size = size.tiny)
+
+// ============================================== support / resistance ====
+// Pivots confirm `right` bars after the swing (25 for the main levels, 5 for
+// the quick ones), so each level appears with that lag -- it does not repaint.
+left = 50
+right = 25
+quick_right = 5
+ph  = ta.pivothigh(high, left, right)
+pl  = ta.pivotlow(low, left, right)
+qph = ta.pivothigh(high, left, quick_right)
+qpl = ta.pivotlow(low, left, quick_right)
+level1 = ta.valuewhen(not na(qph), high[quick_right], 0)
+level2 = ta.valuewhen(not na(qpl), low[quick_right], 0)
+level3 = ta.valuewhen(not na(ph), high[right], 0)
+level4 = ta.valuewhen(not na(pl), low[right], 0)
+level5 = ta.valuewhen(not na(ph), high[right], 1)
+level6 = ta.valuewhen(not na(pl), low[right], 1)
+level7 = ta.valuewhen(not na(ph), high[right], 2)
+level8 = ta.valuewhen(not na(pl), low[right], 2)
+
+lvlCol(float lv) =>
+    close >= lv ? #0DBBFF : #E93E63
+
+plot(ensr ? level1 : na, color = lvlCol(level1), show_last = 1, linewidth = 2, trackprice = true)
+plot(ensr ? level2 : na, color = lvlCol(level2), show_last = 1, linewidth = 2, trackprice = true)
+plot(ensr ? level3 : na, color = lvlCol(level3), show_last = 1, linewidth = 2, trackprice = true)
+plot(ensr ? level4 : na, color = lvlCol(level4), show_last = 1, linewidth = 2, trackprice = true)
+plot(ensr ? level5 : na, color = lvlCol(level5), show_last = 1, linewidth = 2, trackprice = true)
+plot(ensr ? level6 : na, color = lvlCol(level6), show_last = 1, linewidth = 2, trackprice = true)
+plot(ensr ? level7 : na, color = lvlCol(level7), show_last = 1, linewidth = 2, trackprice = true)
+plot(ensr ? level8 : na, color = lvlCol(level8), show_last = 1, linewidth = 2, trackprice = true)
+
+// Zones: 8 lines drawn once on the last bar. The original created 8 new
+// lines on EVERY bar and relied on Pine silently deleting old ones.
+var array<line> zones = array.new<line>()
+if barstate.islast
+    for z in zones
+        line.delete(z)
+    array.clear(zones)
+    if ensra
+        lvls = array.from(level1, level2, level3, level4, level5, level6, level7, level8)
+        for lv in lvls
+            if not na(lv)
+                array.push(zones, line.new(bar_index, lv, bar_index + 1, lv, extend = extend.both,
+                     color = color.new(lvlCol(lv), 85), width = 13))
+
+// ===================================================== QQE signals ====
+Wilders_Period = RSI_Period * 2 - 1
+RsiMa    = ta.ema(ta.rsi(close, RSI_Period), SF)
+AtrRsi   = math.abs(RsiMa[1] - RsiMa)
+MaAtrRsi = ta.ema(AtrRsi, Wilders_Period)
+dar      = ta.ema(MaAtrRsi, Wilders_Period) * KQE
+
+float longband = 0.0
+float shortband = 0.0
+newshortband = RsiMa + dar
+newlongband  = RsiMa - dar
+longband  := RsiMa[1] > longband[1] and RsiMa > longband[1] ? math.max(longband[1], newlongband) : newlongband
+shortband := RsiMa[1] < shortband[1] and RsiMa < shortband[1] ? math.min(shortband[1], newshortband) : newshortband
+crossLong  = ta.cross(longband[1], RsiMa)
+crossShort = ta.cross(RsiMa, shortband[1])
+int qTrend = 1
+qTrend := crossShort ? 1 : crossLong ? -1 : nz(qTrend[1], 1)
+fastTL = qTrend == 1 ? longband : shortband
+
+var int exLong = 0
+var int exShort = 0
+exLong  := fastTL < RsiMa ? exLong + 1 : 0
+exShort := fastTL > RsiMa ? exShort + 1 : 0
+
+plotshape(enrevser and exLong == 1 and barstate.isconfirmed, "QQE up", shape.triangleup, location.belowbar, color.new(#0DBBFF, 35), size = size.tiny)
+plotshape(enrevser and exShort == 1 and barstate.isconfirmed, "QQE down", shape.triangledown, location.abovebar, color.new(#E93E63, 35), size = size.tiny)
+
+// =============================================================== alerts ====
+alertcondition(buyConf, "Buy (confirmed)", "EzTrades+ Buy on {{ticker}} at {{close}}")
+alertcondition(sellConf, "Sell (confirmed)", "EzTrades+ Sell on {{ticker}} at {{close}}")

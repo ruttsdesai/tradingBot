@@ -124,3 +124,40 @@ uptrends. Drawdowns were also severe, -23% to -58%.
 
 So crypto is not a way around the earlier conclusion. What it does avoid is the cost problem — at
 ~10 trades/year the cost drag is negligible, unlike NSE intraday's ~53%/yr.
+
+
+---
+
+# `ezalgo_cleaned.pine` — a third-party indicator, fixed and made honest
+
+A cleaned-up version of the free "EzAlgo" script (MPL-2.0, © Pineify). Its
+Buy/Sell signal is a single Supertrend (ATR 11, ×2, centred on `close`); the
+cloud, bands, diamonds, QQE and S&R layers are visual context.
+
+**What changed**
+
+- **No repainting.** Signals count only on closed bars. A faint triangle marks a
+  signal still forming on the live bar ("forming — wait for close").
+- **Every exit is drawn with its net P&L, losses included.** The original marked
+  target hits with ✕ and never showed a losing exit.
+- **Stats panel** (bottom right): trades, win rate, average net per trade,
+  profit factor, open-trade P&L, all after the cost you set. Fills are assumed
+  at the next bar's open.
+- Fixed: entry/stop/target lines anchored to the wrong bar after a Sell;
+  "Show bands" toggle that did nothing; S&R zones creating 8 new lines on every
+  bar; dead inputs and code; misleading labels ("Sensitivity" worked backwards,
+  "Risk To Reward" was the stop distance).
+- New options: band source (`close` vs standard `hl2`), 200-EMA trend filter,
+  long-only, NSE intraday rules (no entries after 15:00, flat at 15:10 IST).
+
+**What testing found (2026-10, 20 NSE large caps)**
+
+| | Result |
+|---|---|
+| 5m, gross | **+0.0 bp/trade**, profit factor 1.00 — no signal at all |
+| 5m, net 0.05%/side | −10 bp/trade, t = −12, win 31% |
+| Walk-forward over 160 settings × 4 timeframes | **no setting positive on held-out data with significance** |
+| Daily long-only, 5 years | +0.1%/yr vs +5.8%/yr buy-and-hold |
+
+Use it for chart context if you like it. Don't take entries from it — and if
+you do, the stats panel will tell you what it is costing.
