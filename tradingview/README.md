@@ -136,6 +136,9 @@ cloud, bands, diamonds, QQE and S&R layers are visual context.
 
 **What changed**
 
+- **Levels go live when a trade fills.** Entry/stop/targets appear at the open of the
+  entry candle (or as *planned* levels the moment the signal candle closes), not a
+  candle later.
 - **No repainting.** Signals count only on closed bars. A faint triangle marks a
   signal still forming on the live bar ("forming — wait for close").
 - **Every exit is drawn with its net P&L, losses included.** The original marked

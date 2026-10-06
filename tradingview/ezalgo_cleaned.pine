@@ -145,12 +145,6 @@ bool evSL = false
 bool evTP = false
 bool evSq = false
 
-// LIVE warnings: fire mid-candle the moment price touches the level, instead
-// of waiting for the close. Evaluated against the position held at the last
-// close, so they never fire on a trade that is not open yet.
-bool stopTouchLive = not barstate.isconfirmed and useStop and ((pos == 1 and low <= stopPx) or (pos == -1 and high >= stopPx))
-bool tgtTouchLive  = not barstate.isconfirmed and not na(tgtPx) and ((pos == 1 and high >= tgtPx) or (pos == -1 and low <= tgtPx))
-
 var int   nTr = 0
 var int   nWin = 0
 var float sumR = 0.0
@@ -263,9 +257,31 @@ if barstate.isconfirmed
         sigLow := low
         sigAtr := atr14
 
-// Entry / stop / target lines for the OPEN trade, drawn once on the last bar
-// (the original created and deleted them on every bar and anchored them to
-// the wrong signal after a Sell).
+// ------------------------------------------------ the trade RIGHT NOW ----
+// The bookkeeping above commits at candle close, so a trade that filled at
+// THIS candle's open is not recorded until this candle closes. Without the
+// block below, a new trade showed no entry/stop/targets for its whole first
+// candle -- exactly when you are placing the order. This rebuilds the live
+// state from the pending order (display and live alerts only; the stats
+// still count the trade at close, as before).
+bool fillingNow = pendDir != 0 and not barstate.isconfirmed   // entry candle in progress: filled at its open
+bool plannedNow = pendDir != 0 and barstate.isconfirmed       // signal just closed; next candle not open yet
+int   dPos   = pendDir != 0 ? pendDir : (pendExit and not barstate.isconfirmed) ? 0 : pos
+float dEntry = fillingNow ? open : plannedNow ? close : entryPx
+float dStop  = pendDir == 1 ? sigLow - stopMult * sigAtr : pendDir == -1 ? sigHigh + stopMult * sigAtr : stopPx
+float dRisk  = math.abs(dEntry - dStop)
+float dTp1   = pendDir != 0 ? dEntry + pendDir * dRisk * r1 : tp1Px
+float dTp2   = pendDir != 0 ? dEntry + pendDir * dRisk * r2 : tp2Px
+float dTp3   = pendDir != 0 ? dEntry + pendDir * dRisk * r3 : tp3Px
+float dTgt   = pendDir != 0 ? (tpSel == "TP1" ? dTp1 : tpSel == "TP2" ? dTp2 : tpSel == "TP3" ? dTp3 : na) : tgtPx
+int   dBar   = pendDir != 0 ? (fillingNow ? bar_index : bar_index + 1) : entryBar
+
+// LIVE warnings: fire mid-candle the moment price touches a level, instead of
+// waiting for the close -- including on the entry candle.
+bool stopTouchLive = not barstate.isconfirmed and useStop and ((dPos == 1 and low <= dStop) or (dPos == -1 and high >= dStop))
+bool tgtTouchLive  = not barstate.isconfirmed and not na(dTgt) and ((dPos == 1 and high >= dTgt) or (dPos == -1 and low <= dTgt))
+
+// Entry / stop / target lines, drawn once on the last bar from the live view.
 var array<line>  lvlLines = array.new<line>()
 var array<label> lvlLabels = array.new<label>()
 if barstate.islast
@@ -275,30 +291,36 @@ if barstate.islast
         label.delete(lb)
     array.clear(lvlLines)
     array.clear(lvlLabels)
-    if showLvls and pos != 0
-        prices = array.from(entryPx, stopPx, tp1Px, tp2Px, tp3Px)
-        names  = array.from("Entry", "Stop", "TP1", "TP2", "TP3")
+    if showLvls and dPos != 0
+        prices = array.from(dEntry, dStop, dTp1, dTp2, dTp3)
+        names  = array.from(plannedNow ? "Entry (planned)" : "Entry", "Stop", "TP1", "TP2", "TP3")
         for i = 0 to 4
             float p = array.get(prices, i)
             if not na(p) and (i != 1 or useStop)
                 color c = i == 0 ? color.gray : i == 1 ? #E93E63 : #00D9FC
-                array.push(lvlLines, line.new(entryBar, p, bar_index + 5, p, color = c, width = 2))
+                array.push(lvlLines, line.new(dBar, p, bar_index + 5, p, color = c, width = 2))
                 array.push(lvlLabels, label.new(bar_index + 5, p, array.get(names, i) + "  " + str.tostring(p, format.mintick),
                      style = label.style_label_left, color = color.new(c, 0), textcolor = color.white, size = size.small))
 
 // ================================================================ stats ====
 var table panel = table.new(position.bottom_right, 2, 9, border_width = 1, frame_color = color.gray, frame_width = 1)
 if showStats and barstate.islast
-    string act = enSignals and bull and not barstate.isconfirmed ? "BUY forming - wait for close"
+    string act = stopTouchLive ? "STOP HIT"
+         : tgtTouchLive ? "TARGET HIT"
+         : enSignals and bull and not barstate.isconfirmed ? "BUY forming - wait for close"
          : enSignals and bear and not barstate.isconfirmed ? "SELL forming - wait for close"
-         : pendDir == 1 ? "BUY - enter next open"
-         : pendDir == -1 ? "SELL - short next open"
-         : pendExit ? "EXIT next open"
-         : pos == 1 ? "LONG" : pos == -1 ? "SHORT" : "FLAT"
-    color actCol = str.contains(act, "forming") ? color.orange : pendDir == 1 or pos == 1 ? color.new(#00A8C6, 0)
-         : pendDir == -1 or pos == -1 ? color.new(#E93E63, 0) : color.gray
+         : plannedNow and pendDir == 1 ? "BUY - enter next open"
+         : plannedNow and pendDir == -1 ? "SELL - short next open"
+         : pendExit and barstate.isconfirmed ? "EXIT next open"
+         : pendExit and not barstate.isconfirmed ? "FLAT - exited at open"
+         : fillingNow and pendDir == 1 ? "LONG - entered at open"
+         : fillingNow and pendDir == -1 ? "SHORT - entered at open"
+         : dPos == 1 ? "LONG" : dPos == -1 ? "SHORT" : "FLAT"
+    color actCol = stopTouchLive ? color.red : tgtTouchLive ? color.teal
+         : str.contains(act, "forming") ? color.orange
+         : dPos == 1 ? color.new(#00A8C6, 0) : dPos == -1 ? color.new(#E93E63, 0) : color.gray
     float pf = grossL > 0 ? grossW / grossL : na
-    float openR = pos != 0 ? pos * (close - entryPx) / entryPx - cost : na
+    float openR = dPos != 0 and not plannedNow ? dPos * (close - dEntry) / dEntry - cost : na
     table.cell(panel, 0, 0, "ACTION", text_color = color.white, bgcolor = actCol, text_halign = text.align_left)
     table.cell(panel, 1, 0, act, text_color = color.white, bgcolor = actCol, text_halign = text.align_right)
     table.cell(panel, 0, 1, "Closed trades", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
