@@ -162,6 +162,15 @@ cloud, bands, diamonds, QQE and S&R layers are visual context.
 | Walk-forward over 160 settings × 4 timeframes | **no setting positive on held-out data with significance** |
 | Daily long-only, 5 years | +0.1%/yr vs +5.8%/yr buy-and-hold |
 
+**Your own trade ("My trade" in Settings).** TradingView gives indicators no access
+to your account, orders or screen, so the indicator cannot detect an order by
+itself. Set *My position* (Long/Short) and *My entry price* when you open a trade,
+and back to *None* when you close it. Then the ACTION box shows your live P&L and
+warns when the indicator turns against you, the TP/SL lines are drawn from your
+entry (dashed, labelled "My ..."), and three extra alerts cover your trade. If you
+trade *with* the indicator, your stop is its signal-anchored stop; against it, the
+stop is 4 x ATR(14) from your entry.
+
 **Alerts** (right-click chart → Add alert → Condition: *EzAlgo (cleaned)*)
 
 | Alert | Fires | Frequency to choose |
