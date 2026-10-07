@@ -137,11 +137,13 @@ See **[COMMANDS.md](COMMANDS.md)** for a full grouped cheat sheet. Quick referen
 | Command | Purpose | Mode |
 |---------|---------|------|
 | `paper` | Paper trading simulation | Offline |
-| `backtest` | Historical backtesting (USA/India/Canada/Crypto) | Offline |
+| `backtest` | Historical backtesting (USA/India/Canada/Crypto, daily bars) | Offline |
+| `backtest-intraday` | Day-trading backtest (5m bars + NSE intraday rules, ~60 days) | Offline |
 | `benchmark` | Rank all strategies by metrics | Offline |
 | `walk-forward` | Walk-forward optimization | Offline |
 | `grid-search` | Exhaustive parameter search | Offline |
 | `chart` | Candlestick chart with trade markers | Offline |
+| `day-trade` | 5 strategies in parallel on one intraday chart → one buy/sell decision | Offline/Signal |
 | `crypto-live` | Binance testnet/live trading | Live |
 | `dhan-live` | Dhan NSE sandbox/live trading | Live |
 | `live` | Alpaca US stock trading | Live |
@@ -180,6 +182,11 @@ See **[COMMANDS.md](COMMANDS.md)** for a full grouped cheat sheet. Quick referen
 
 ### Ensemble Mode
 Combines votes from multiple strategies. BUY only when `min_buy_votes` strategies agree (default: 2 out of 5). Reduces false signals at the cost of fewer trades.
+
+### Parallel Day-Trade Mode (`day-trade`)
+All 5 strategies run **in parallel on every intraday bar of a single chart** (5m/15m/etc.). Each strategy keeps a virtual trade ledger on that exact chart; its vote is weighted by its recent virtual profitability (winners get up to 3× voice, losers are muted to 0.25×, never silenced). The bot BUYs on weighted consensus (`entry_threshold`), SELLs on consensus loss / 1% stop / 2.5% take-profit / 0.8% trailing stop, only enters above a 200-bar trend EMA, blocks entries in the last 30 minutes, and **always squares off before the session close** (zero overnight risk). Validate offline with `python scripts/validate_day_trade.py`.
+
+> ⚠️ No strategy is guaranteed profitable. Backtest results (and the synthetic-regime validation) are not a promise of future returns — always paper trade before risking real money.
 
 ---
 
@@ -250,7 +257,10 @@ The scheduler runs daily at **09:15 IST** (NSE market open). It:
 python cli.py schedule
 ```
 
-Set `scheduler.mode` in config.yaml: `paper` | `live` | `crypto` | `dhan`.
+Set `scheduler.mode` in config.yaml: `paper` | `live` | `crypto` | `dhan` | `both`.
+
+`both` runs the crypto trader 24/7 in a background thread and launches the Dhan
+trader daily at `run_time` (it gates itself on NSE market hours).
 
 ---
 

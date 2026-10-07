@@ -1,0 +1,226 @@
+// =============================================================================
+//  Crypto Bot Signals — the same consensus logic, adapted for 24/7 crypto
+// =============================================================================
+//  This is NOT a copy of the NSE script. Crypto differs in ways that make a
+//  naive port wrong:
+//
+//    - 24/7 market: there is no session close, so the 15:00 stop-buy and 15:10
+//      square-off rules are meaningless and are REMOVED.
+//    - Volatility is ~10x higher (BTC moves 2-4%/day vs ~0.3% intraday on NSE
+//      large-caps), so the volatility filter and stop distances are rescaled.
+//    - Costs are HIGHER, not lower: Binance taker is ~0.1% per side (~0.2%
+//      round trip) vs ~0.1% round trip on Dhan. Frequent trading is therefore
+//      punished harder here, which is why this defaults to 4H/1D, not 5m.
+//
+//  MEASURED BEFORE BUILDING (5y daily, costs charged both sides at 0.1%/side):
+//
+//    BTC-USD  buy & hold +7.3%/yr
+//      rsi_mean_revert  +8.2%/yr  (+0.9 vs B&H)   <- best, but inside noise
+//      macd             +5.1%/yr  (-2.1)
+//      ma_crossover     +4.1%/yr  (-3.1)
+//      momentum         +2.3%/yr  (-4.9)
+//      bollinger        +0.8%/yr  (-6.4)
+//
+//    ETH-USD  buy & hold -9.4%/yr
+//      momentum        +12.3%/yr (+21.7 vs B&H)
+//      ma_crossover     +4.8%/yr (+14.2)
+//      rsi              +3.1%/yr (+12.5)
+//
+//  Read that honestly: the strategies beat buy & hold on ETH mainly because
+//  ETH FELL 39% and they sat out part of the decline. On BTC, which rose, only
+//  one edged past holding and only by 0.9pp. That is the same "insurance, not
+//  alpha" pattern found on NSE — helpful in downtrends, a drag in uptrends.
+//  Drawdowns were also severe: -23% to -58%.
+//
+//  Use these as a structured second opinion, not as buy/sell instructions.
+//
+//  Setup: Pine Editor -> paste -> Add to chart. Best on 4H or 1D.
+// =============================================================================
+
+//@version=6
+indicator("Crypto Bot Signals", overlay = true, max_labels_count = 500)
+
+// ---------------------------------------------------------------- inputs ----
+grpS = "Strategy parameters"
+rsiLen  = input.int(14,    "RSI length",            group = grpS, minval = 2)
+rsiBuy  = input.float(30,  "RSI oversold (buy)",    group = grpS)
+rsiSell = input.float(70,  "RSI overbought (sell)", group = grpS)
+bbLen   = input.int(20,    "Bollinger length",      group = grpS, minval = 2)
+bbStd   = input.float(2.0, "Bollinger std dev",     group = grpS, step = 0.1)
+maFast  = input.int(20,    "MA fast",               group = grpS, minval = 1)
+maSlow  = input.int(50,    "MA slow",               group = grpS, minval = 2)
+useMom  = input.bool(true, "Include momentum breakout (best on ETH)", group = grpS)
+momLen  = input.int(20,    "Breakout lookback",     group = grpS, minval = 2)
+
+grpR = "Risk / filters  (crypto-scaled)"
+useVolFilter = input.bool(true, "Volatility filter", group = grpR)
+minVolPct    = input.float(1.0, "Min ATR/close %", group = grpR, step = 0.1,
+     tooltip = "Crypto ATR/close runs ~2-4% daily. 1% skips only genuinely dead periods. The NSE bot used 0.15% because those stocks barely move.")
+atrLen       = input.int(14, "ATR length", group = grpR, minval = 1)
+useTrail     = input.bool(true, "Trailing stop", group = grpR)
+trailPct     = input.float(8.0, "Trailing stop %", group = grpR, step = 0.5,
+     tooltip = "Crypto needs a MUCH wider trail than equities. A 0.8% trail (the NSE setting) would be stopped out by ordinary hourly noise.")
+cooldownBars = input.int(3, "Re-entry cooldown (bars)", group = grpR, minval = 0)
+
+grpV = "Display"
+showBands = input.bool(true, "Show Bollinger bands", group = grpV)
+showMAs   = input.bool(true, "Show moving averages", group = grpV)
+showVotes = input.bool(true, "Show vote table",      group = grpV)
+
+// ------------------------------------------------------------- functions ----
+// Pine requires function declarations at GLOBAL scope — never inside `if`.
+sigText(bool b, bool s) =>
+    b ? "BUY" : s ? "SELL" : "HOLD"
+
+sigColor(bool b, bool s) =>
+    b ? color.green : s ? color.red : color.gray
+
+// ------------------------------------------------------------ indicators ----
+rsi    = ta.rsi(close, rsiLen)
+basis  = ta.sma(close, bbLen)
+dev    = bbStd * ta.stdev(close, bbLen)
+upper  = basis + dev
+lower  = basis - dev
+maF    = ta.sma(close, maFast)
+maS    = ta.sma(close, maSlow)
+atr    = ta.atr(atrLen)
+volPct = close > 0 ? atr / close * 100.0 : 0.0
+hiN    = ta.highest(close, momLen)[1]
+loN    = ta.lowest(close, momLen)[1]
+
+// ------------------------------------------------------- strategy signals ----
+rsiBuySig  = rsi < rsiBuy
+rsiSellSig = rsi > rsiSell
+bbBuySig   = close <= lower
+bbSellSig  = close >= upper
+maBuySig   = ta.crossover(maF, maS)
+maSellSig  = ta.crossunder(maF, maS)
+momBuySig  = useMom and close > hiN
+momSellSig = useMom and close < loN
+
+// ------------------------------------------------------------- consensus ----
+buyVotes  = (rsiBuySig ? 1 : 0)  + (bbBuySig ? 1 : 0)  + (maBuySig ? 1 : 0)  + (momBuySig ? 1 : 0)
+sellVotes = (rsiSellSig ? 1 : 0) + (bbSellSig ? 1 : 0) + (maSellSig ? 1 : 0) + (momSellSig ? 1 : 0)
+nStrat    = useMom ? 4 : 3
+
+consensusBuy  = buyVotes > sellVotes
+consensusSell = sellVotes > buyVotes
+
+// --------------------------------------------------------------- position ----
+var bool  inPos   = false
+var float peak    = na
+var int   exitBar = na
+
+inCooldown = not na(exitBar) and (bar_index - exitBar) < cooldownBars
+lowVol     = useVolFilter and volPct < minVolPct
+
+if inPos
+    peak := math.max(nz(peak, close), close)
+
+trailStop = inPos and useTrail and not na(peak) ? peak * (1.0 - trailPct / 100.0) : na
+trailHit  = inPos and useTrail and not na(trailStop) and close <= trailStop
+
+buySignal  = consensusBuy and not inPos and not lowVol and not inCooldown
+sellSignal = inPos and (consensusSell or trailHit)
+
+// Remember the most recent actionable signal so the panel can show what the
+// last call was and how stale it is.
+var string lastSig    = "none"
+var int    lastSigBar = na
+
+if buySignal
+    inPos := true
+    peak  := close
+    lastSig := "BUY"
+    lastSigBar := bar_index
+if sellSignal
+    inPos   := false
+    exitBar := bar_index
+    peak    := na
+    lastSig := trailHit ? "TRAIL" : "SELL"
+    lastSigBar := bar_index
+
+// ------------------------------------------------------------------ plots ----
+plot(showMAs ? maF : na, "MA fast", color = color.new(color.aqua, 0))
+plot(showMAs ? maS : na, "MA slow", color = color.new(color.orange, 0))
+pu = plot(showBands ? upper : na, "BB upper", color = color.new(color.gray, 50))
+pl = plot(showBands ? lower : na, "BB lower", color = color.new(color.gray, 50))
+fill(pu, pl, color = color.new(color.gray, 92))
+plot(trailStop, "Trail stop", color = color.new(color.red, 20), style = plot.style_linebr)
+
+plotshape(buySignal, title = "BUY", style = shape.labelup, location = location.belowbar,
+     color = color.new(color.green, 0), textcolor = color.white, text = "BUY", size = size.small)
+plotshape(sellSignal and not trailHit, title = "SELL", style = shape.labeldown,
+     location = location.abovebar, color = color.new(color.red, 0),
+     textcolor = color.white, text = "SELL", size = size.small)
+plotshape(trailHit, title = "TRAIL STOP", style = shape.labeldown, location = location.abovebar,
+     color = color.new(color.maroon, 0), textcolor = color.white, text = "TRAIL", size = size.small)
+plotshape(consensusBuy and not inPos and (lowVol or inCooldown), title = "BUY blocked",
+     style = shape.xcross, location = location.belowbar,
+     color = color.new(color.gray, 30), size = size.tiny)
+
+// ------------------------------------------------------- LIVE ACTION PANEL ----
+// Anchored to the top-right of the viewport, so it stays put while you scroll
+// and always reports the LATEST bar — that is the live reading. Crypto trades
+// 24/7 so this updates continuously; on an equity chart it freezes outside
+// market hours, which is normal and not a fault.
+var table panel = table.new(position.top_right, 2, 10, border_width = 1,
+     frame_color = color.gray, frame_width = 1)
+
+blockedNow = consensusBuy and not inPos and (lowVol or inCooldown)
+
+actionTxt = buySignal   ? "BUY NOW"
+     : trailHit         ? "TRAIL STOP - EXIT"
+     : sellSignal       ? "SELL NOW"
+     : inPos            ? "HOLDING"
+     : blockedNow       ? "BUY BLOCKED"
+     : consensusSell    ? "SELL signal (no position)"
+     :                    "WAIT"
+
+actionCol = buySignal ? color.green : (sellSignal or trailHit) ? color.red
+     : inPos ? color.teal : blockedNow ? color.orange : color.gray
+
+barsAgo = na(lastSigBar) ? na : bar_index - lastSigBar
+lastTxt = lastSig == "none" ? "none yet"
+     : lastSig + " " + (barsAgo == 0 ? "this bar" : str.tostring(barsAgo) + " bars ago")
+
+if showVotes and barstate.islast
+    table.cell(panel, 0, 0, "ACTION", text_color = color.white, bgcolor = actionCol,
+         text_size = size.normal, text_halign = text.align_left)
+    table.cell(panel, 1, 0, actionTxt, text_color = color.white, bgcolor = actionCol,
+         text_size = size.normal, text_halign = text.align_right)
+
+    table.cell(panel, 0, 1, "RSI " + str.tostring(rsi, "#.0"), text_color = color.gray, text_size = size.small, text_halign = text.align_left)
+    table.cell(panel, 1, 1, sigText(rsiBuySig, rsiSellSig), text_color = sigColor(rsiBuySig, rsiSellSig), text_size = size.small, text_halign = text.align_right)
+
+    table.cell(panel, 0, 2, "Bollinger", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
+    table.cell(panel, 1, 2, sigText(bbBuySig, bbSellSig), text_color = sigColor(bbBuySig, bbSellSig), text_size = size.small, text_halign = text.align_right)
+
+    table.cell(panel, 0, 3, "MA cross", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
+    table.cell(panel, 1, 3, sigText(maBuySig, maSellSig), text_color = sigColor(maBuySig, maSellSig), text_size = size.small, text_halign = text.align_right)
+
+    momTxt = useMom ? sigText(momBuySig, momSellSig) : "-"
+    momCol = useMom ? sigColor(momBuySig, momSellSig) : color.gray
+    table.cell(panel, 0, 4, useMom ? "Momentum" : "Momentum (off)", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
+    table.cell(panel, 1, 4, momTxt, text_color = momCol, text_size = size.small, text_halign = text.align_right)
+
+    consTxt = consensusBuy ? "BUY " + str.tostring(buyVotes) + "/" + str.tostring(nStrat) : consensusSell ? "SELL " + str.tostring(sellVotes) + "/" + str.tostring(nStrat) : "no majority"
+    table.cell(panel, 0, 5, "Consensus", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
+    table.cell(panel, 1, 5, consTxt, text_color = sigColor(consensusBuy, consensusSell), text_size = size.small, text_halign = text.align_right)
+
+    table.cell(panel, 0, 6, "Last signal", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
+    table.cell(panel, 1, 6, lastTxt, text_color = lastSig == "BUY" ? color.green : lastSig == "none" ? color.gray : color.red, text_size = size.small, text_halign = text.align_right)
+
+    table.cell(panel, 0, 7, "Position", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
+    table.cell(panel, 1, 7, inPos ? "LONG" : "flat", text_color = inPos ? color.green : color.gray, text_size = size.small, text_halign = text.align_right)
+
+    table.cell(panel, 0, 8, "Trail stop", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
+    table.cell(panel, 1, 8, not na(trailStop) ? str.tostring(trailStop, format.mintick) : "-", text_color = color.red, text_size = size.small, text_halign = text.align_right)
+
+    table.cell(panel, 0, 9, "ATR/close", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
+    table.cell(panel, 1, 9, str.tostring(volPct, "#.00") + "%", text_color = lowVol ? color.red : color.green, text_size = size.small, text_halign = text.align_right)
+
+// ----------------------------------------------------------------- alerts ----
+alertcondition(buySignal,  "Crypto BUY",  "Consensus BUY on {{ticker}} at {{close}}")
+alertcondition(sellSignal, "Crypto SELL", "Consensus SELL on {{ticker}} at {{close}}")
+alertcondition(trailHit,   "Trail stop",  "Trailing stop hit on {{ticker}} at {{close}}")

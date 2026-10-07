@@ -25,6 +25,84 @@ import click
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 
+class _Tee:
+    """Duplicate a text stream to the console AND a log file.
+
+    Writes are flushed on every call so the file stays live during a
+    long-running session and survives Ctrl+C. Cross-platform (works the
+    same on Windows, macOS and the cloud), unlike a shell pipe/tee.
+    """
+
+    def __init__(self, stream, fh):
+        self._stream = stream
+        self._fh = fh
+
+    def write(self, data):
+        self._stream.write(data)
+        self._stream.flush()
+        try:
+            self._fh.write(data)
+            self._fh.flush()
+        except Exception:
+            pass  # never let logging break the bot
+        return len(data)
+
+    def flush(self):
+        self._stream.flush()
+        try:
+            self._fh.flush()
+        except Exception:
+            pass
+
+    def __getattr__(self, name):
+        # Delegate anything else (isatty, encoding, fileno, …) to the console
+        return getattr(self._stream, name)
+
+
+def _start_logging(log_file: str):
+    """Redirect stdout+stderr through a tee into `log_file`. Returns the
+    open file handle (kept alive for the process lifetime)."""
+    log_file = os.path.abspath(log_file)
+    os.makedirs(os.path.dirname(log_file), exist_ok=True)
+    fh = open(log_file, "a", encoding="utf-8", buffering=1)
+    fh.write(f"\n===== session started {datetime.now():%Y-%m-%d %H:%M:%S} =====\n")
+    fh.flush()
+    sys.stdout = _Tee(sys.stdout, fh)
+    sys.stderr = _Tee(sys.stderr, fh)
+    print(f"  [LOG] Console output is being saved to: {log_file}")
+    return fh
+
+
+def _disable_windows_quickedit():
+    """Turn off the Windows console 'QuickEdit Mode'.
+
+    With QuickEdit on (the default), clicking or selecting text inside a
+    cmd/PowerShell window PAUSES the running program until a key is pressed —
+    which silently freezes the trading loop for as long as the selection sits
+    there. Disabling it means clicking in the window can no longer stall the
+    bot. No-op on non-Windows or if the console can't be configured.
+    """
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.windll.kernel32
+        STD_INPUT_HANDLE = -10
+        ENABLE_EXTENDED_FLAGS = 0x0080
+        ENABLE_QUICK_EDIT_MODE = 0x0040
+        handle = kernel32.GetStdHandle(STD_INPUT_HANDLE)
+        mode = wintypes.DWORD()
+        if kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            new_mode = (mode.value | ENABLE_EXTENDED_FLAGS) & ~ENABLE_QUICK_EDIT_MODE
+            if kernel32.SetConsoleMode(handle, new_mode):
+                print("  [CONSOLE] QuickEdit disabled — clicking in this window "
+                      "won't pause the bot.")
+    except Exception:
+        pass  # never let a console tweak break startup
+
+
 def load_config():
     """Load YAML config with environment variable substitution."""
     import yaml
@@ -237,29 +315,17 @@ def _save_portfolio_state(results: list) -> None:
     click.echo(f"Portfolio state saved to {state_file} ({len(entries)} runs)")
 
 
-def _run_backtest_market(label: str, tickers: list[str], years: int, capital: float,
-                          commission_pct: float, strategy: str, risk,
-                          strat_cfg: dict, csv_dir: str = "") -> None:
-    """Run backtest for a single market. Shared by all market flags.
+def _build_strategy_list(strategy: str, strat_cfg: dict) -> list[tuple[str, object]]:
+    """Build [(display_name, strategy_instance)] from config.
 
-    If csv_dir is provided, writes one CSV per strategy to backtest_{label}_{strategy}.csv.
+    `strategy` is a single strategy key or "all". Returns fresh instances,
+    so call this once per backtest run (strategies carry internal state).
     """
-    from data.stocks import fetch_multiple_stocks
     from strategies.ma_crossover import MACrossoverStrategy
     from strategies.rsi_mean_revert import RSIMeanReversionStrategy
     from strategies.macd import MACDStrategy
     from strategies.bollinger_bands import BollingerBandsStrategy
     from strategies.momentum_breakout import MomentumBreakoutStrategy
-    from backtest.runner import BacktestRunner
-
-    click.echo(f"\n*** Backtesting {label} ({years}yr, {len(tickers)} tickers) ***\n")
-    data = fetch_multiple_stocks(tickers, years=years)
-
-    # Filter out tickers that failed to fetch
-    data = {t: df for t, df in data.items() if not df.empty}
-    if not data:
-        click.echo("  No data fetched -- skipping.\n")
-        return
 
     strategies_to_run = []
     if strategy in ("ma_crossover", "all"):
@@ -285,6 +351,29 @@ def _run_backtest_market(label: str, tickers: list[str], years: int, capital: fl
         mb = strat_cfg["momentum_breakout"]
         strategies_to_run.append(("Momentum Breakout", MomentumBreakoutStrategy(
             lookback=mb["lookback"], exit_sma=mb["exit_sma"])))
+    return strategies_to_run
+
+
+def _run_backtest_market(label: str, tickers: list[str], years: int, capital: float,
+                          commission_pct: float, strategy: str, risk,
+                          strat_cfg: dict, csv_dir: str = "") -> None:
+    """Run backtest for a single market. Shared by all market flags.
+
+    If csv_dir is provided, writes one CSV per strategy to backtest_{label}_{strategy}.csv.
+    """
+    from data.stocks import fetch_multiple_stocks
+    from backtest.runner import BacktestRunner
+
+    click.echo(f"\n*** Backtesting {label} ({years}yr, {len(tickers)} tickers) ***\n")
+    data = fetch_multiple_stocks(tickers, years=years)
+
+    # Filter out tickers that failed to fetch
+    data = {t: df for t, df in data.items() if not df.empty}
+    if not data:
+        click.echo("  No data fetched -- skipping.\n")
+        return
+
+    strategies_to_run = _build_strategy_list(strategy, strat_cfg)
 
     for sname, s in strategies_to_run:
         runner = BacktestRunner(s, capital, commission_pct, risk)
@@ -335,11 +424,6 @@ def backtest(usa, india, canada, usa_short, crypto, strategy, years, csv_dir):
     from data.crypto import fetch_multiple_crypto
     from backtest.runner import BacktestRunner
     from engine.risk_manager import RiskManager
-    from strategies.ma_crossover import MACrossoverStrategy
-    from strategies.rsi_mean_revert import RSIMeanReversionStrategy
-    from strategies.macd import MACDStrategy
-    from strategies.bollinger_bands import BollingerBandsStrategy
-    from strategies.momentum_breakout import MomentumBreakoutStrategy
 
     bg_cfg = CONFIG["backtest"]
     risk_cfg = CONFIG["risk"]
@@ -418,31 +502,7 @@ def backtest(usa, india, canada, usa_short, crypto, strategy, years, csv_dir):
         if not data:
             click.echo("  No crypto data fetched.\n")
         else:
-            # Build crypto strategies (same pattern as _run_backtest_market)
-            crypto_strategies = []
-            if strategy in ("ma_crossover", "all"):
-                mc = strat_cfg["ma_crossover"]
-                crypto_strategies.append(("MA Crossover", MACrossoverStrategy(
-                    fast_period=mc["fast_period"], slow_period=mc["slow_period"])))
-            if strategy in ("rsi_mean_revert", "all"):
-                rsi_cfg = strat_cfg["rsi_mean_revert"]
-                crypto_strategies.append(("RSI Mean Reversion", RSIMeanReversionStrategy(
-                    rsi_period=rsi_cfg["rsi_period"],
-                    oversold_threshold=rsi_cfg["oversold_threshold"],
-                    overbought_threshold=rsi_cfg["overbought_threshold"])))
-            if strategy in ("macd", "all"):
-                mc = strat_cfg["macd"]
-                crypto_strategies.append(("MACD", MACDStrategy(
-                    fast_period=mc["fast_period"], slow_period=mc["slow_period"],
-                    signal_period=mc["signal_period"])))
-            if strategy in ("bollinger_bands", "all"):
-                bb = strat_cfg["bollinger_bands"]
-                crypto_strategies.append(("Bollinger Bands", BollingerBandsStrategy(
-                    period=bb["period"], num_std=bb["num_std"])))
-            if strategy in ("momentum_breakout", "all"):
-                mb = strat_cfg["momentum_breakout"]
-                crypto_strategies.append(("Momentum Breakout", MomentumBreakoutStrategy(
-                    lookback=mb["lookback"], exit_sma=mb["exit_sma"])))
+            crypto_strategies = _build_strategy_list(strategy, strat_cfg)
 
             for sname, s in crypto_strategies:
                 runner = BacktestRunner(s, crypto_capital, crypto_comm, risk)
@@ -463,6 +523,153 @@ def backtest(usa, india, canada, usa_short, crypto, strategy, years, csv_dir):
                             writer.writeheader()
                             writer.writerows(rows)
                         click.echo(f"  [CSV] Exported {len(rows)} rows -> {csv_path}")
+
+
+@cli.command("backtest-intraday")
+@click.option("--ticker", "-t", multiple=True,
+              help="Tickers to test (default: dhan_live_trading.tickers from config)")
+@click.option("--strategy", "-s", default="all",
+              type=click.Choice(["ma_crossover", "rsi_mean_revert", "macd",
+                                 "bollinger_bands", "momentum_breakout", "all"]),
+              help="Strategy to backtest")
+@click.option("--days", "-d", default=55, type=int,
+              help="Calendar days of history (yfinance caps 5m/15m at ~60, 1m at 7)")
+@click.option("--interval", "-i", default="5m",
+              type=click.Choice(["1m", "5m", "15m", "30m", "1h"]),
+              help="Candle interval")
+@click.option("--capital", default=None, type=float, help="Override initial capital")
+@click.option("--csv", "csv_path", is_flag=False, default="",
+              help="Export ranked results to this CSV file")
+def backtest_intraday(ticker, strategy, days, interval, capital, csv_path):
+    """Day-trading backtest: intraday bars + the live NSE intraday rules.
+
+    Simulates exactly what `dhan-live` does in intraday mode:
+    no BUYs after 15:00 IST, forced square-off at 15:10 (never holds
+    overnight), ATR volatility filter, and time-exits for stale positions.
+
+    NOTE: yfinance only serves ~60 days of 5m history (7 days of 1m), so
+    this covers weeks, not years — treat it as a reality check of the
+    day-trading config, not a long-term validation.
+
+    Examples:
+      python cli.py backtest-intraday                       # all Dhan tickers, all strategies
+      python cli.py backtest-intraday -t SBIN.NS -s macd    # one combo
+      python cli.py backtest-intraday --csv reports/intraday.csv
+    """
+    from tabulate import tabulate
+    from data.stocks import fetch_stock_data
+    from backtest.intraday_runner import IntradayBacktester
+    from engine.risk_manager import RiskManager
+
+    dhan_cfg = CONFIG.get("dhan_live_trading", {})
+    risk_cfg = CONFIG["risk"]
+    strat_cfg = CONFIG["strategies"]
+
+    tickers = list(ticker) or dhan_cfg.get("tickers", ["SBIN.NS", "ICICIBANK.NS", "BHARTIARTL.NS"])
+    if interval == "1m" and days > 7:
+        click.echo("  [WARN] yfinance caps 1m data at 7 days — clamping.")
+        days = 7
+    initial_capital = capital or CONFIG["paper_trading"]["initial_capital"]
+
+    click.echo(f"\n*** Intraday (day-trading) backtest: {len(tickers)} tickers, "
+               f"{interval} bars, ~{days} days ***")
+    click.echo(f"    Rules: stop-buy 15:00 | square-off 15:10 | time-exit "
+               f"{dhan_cfg.get('max_hold_minutes', 120)}m | "
+               f"SL {risk_cfg['stop_loss_pct']:.0%} / TP {risk_cfg['take_profit_pct']:.0%}\n")
+
+    # Fetch data once per ticker
+    data: dict = {}
+    for t in tickers:
+        try:
+            df = fetch_stock_data(t, years=days / 365.0, interval=interval)
+            if df is not None and not df.empty:
+                data[t] = df
+            else:
+                click.echo(f"  [WARN] No data for {t}, skipping")
+        except Exception as e:
+            click.echo(f"  [WARN] Failed to fetch {t}: {e}")
+    if not data:
+        click.echo("  No intraday data fetched — aborting.")
+        return
+
+    rows = []
+    for t, df in data.items():
+        n_days = len({ts.date() for ts in df.index})
+        # Fresh strategy + risk manager per run — both carry per-run state
+        for sname, strat in _build_strategy_list(strategy, strat_cfg):
+            risk = RiskManager(
+                max_positions=1,          # single-ticker sim
+                max_allocation_pct=1.0,   # full capital per sim (per-ticker isolation)
+                max_daily_loss_pct=risk_cfg["max_daily_loss_pct"],
+                stop_loss_pct=risk_cfg["stop_loss_pct"],
+                take_profit_pct=risk_cfg["take_profit_pct"],
+                trailing_stop_enabled=risk_cfg.get("trailing_stop_enabled", False),
+                trailing_stop_pct=risk_cfg.get("trailing_stop_pct", 0.08),
+                trailing_stop_atr_mult=risk_cfg.get("trailing_stop_atr_mult", 2.0),
+            )
+            bt = IntradayBacktester(
+                strat,
+                risk_manager=risk,
+                initial_capital=initial_capital,
+                commission_pct=CONFIG["backtest"]["stocks"]["commission_pct"],
+                stop_buying_minutes=dhan_cfg.get("stop_buying_minutes", 900),
+                force_square_off_minutes=dhan_cfg.get("force_square_off_minutes", 910),
+                max_hold_minutes=dhan_cfg.get("max_hold_minutes", 120),
+                min_profit_threshold_pct=dhan_cfg.get("min_profit_threshold_pct", 0.005),
+                min_volatility_pct=dhan_cfg.get("min_volatility_pct", 0.005),
+            )
+            result = bt.run(df, ticker=t)
+            rows.append({
+                "Ticker": t,
+                "Strategy": sname,
+                "Return": result.portfolio.total_pnl_pct * 100,
+                "P&L": result.portfolio.total_pnl,
+                "Trades": result.total_trades,
+                "Trades/Day": result.total_trades / n_days if n_days else 0.0,
+                "Win Rate": result.win_rate * 100,
+                "Max DD": result.portfolio.max_drawdown * 100,
+                "Days": n_days,
+            })
+
+    rows.sort(key=lambda r: r["Return"], reverse=True)
+    table = [
+        [i + 1, r["Ticker"], r["Strategy"], f"{r['Return']:+.2f}%", f"{r['P&L']:+,.0f}",
+         r["Trades"], f"{r['Trades/Day']:.1f}", f"{r['Win Rate']:.0f}%",
+         f"{r['Max DD']:.1f}%", r["Days"]]
+        for i, r in enumerate(rows)
+    ]
+    click.echo(tabulate(
+        table,
+        headers=["#", "Ticker", "Strategy", "Return", "P&L", "Trades",
+                 "Trades/Day", "Win Rate", "Max DD", "Days"],
+        tablefmt="rounded_outline",
+    ))
+
+    # Per-strategy averages across tickers
+    by_strat: dict = {}
+    for r in rows:
+        by_strat.setdefault(r["Strategy"], []).append(r)
+    click.echo("\n  -- Strategy averages (across tickers) --")
+    avg_rows = []
+    for sname, srows in by_strat.items():
+        avg_rows.append([
+            sname,
+            f"{sum(x['Return'] for x in srows) / len(srows):+.2f}%",
+            f"{sum(x['Win Rate'] for x in srows) / len(srows):.0f}%",
+            f"{sum(x['Trades'] for x in srows) / len(srows):.0f}",
+        ])
+    avg_rows.sort(key=lambda r: float(r[1].rstrip("%")), reverse=True)
+    click.echo(tabulate(avg_rows, headers=["Strategy", "Avg Return", "Avg Win Rate", "Avg Trades"],
+                        tablefmt="rounded_outline"))
+
+    if csv_path:
+        import csv as csv_mod
+        os.makedirs(os.path.dirname(csv_path) or ".", exist_ok=True)
+        with open(csv_path, "w", newline="") as f:
+            writer = csv_mod.DictWriter(f, fieldnames=list(rows[0].keys()))
+            writer.writeheader()
+            writer.writerows(rows)
+        click.echo(f"\n  [CSV] Exported {len(rows)} rows -> {csv_path}")
 
 
 @cli.command()
@@ -1427,11 +1634,17 @@ def ibkr_live(ticker, market, strategy, once, port):
 @click.option("--all", "all_strategies", is_flag=True, help="Run all 5 strategies (MACD, Bollinger, RSI, MA Crossover, Momentum Breakout)")
 @click.option("--once", is_flag=True, help="Run one cycle then exit (default: loop)")
 @click.option("--live", "live_mode", is_flag=True, help="Use Dhan LIVE (default: sandbox)")
+@click.option("--paper", "paper_mode", is_flag=True,
+              help="Forward paper trading: live prices, simulated fills, no orders, no credentials needed")
+@click.option("--capital", default=None, type=float,
+              help="Virtual starting capital for --paper (default: 10000)")
 @click.option("--intraday", is_flag=True, help="Use intraday bars (5m) instead of daily — catches breakouts during the day")
 @click.option("--intraday-interval", default=None,
               type=click.Choice(["1m", "5m", "15m", "30m", "1h"]),
               help="Intraday candle interval (default: 5m or config value)")
-def dhan_live(ticker, strategies, all_strategies, once, live_mode, intraday, intraday_interval):
+@click.option("--log-file", default=None,
+              help="Also save all console output to this file (created if needed)")
+def dhan_live(ticker, strategies, all_strategies, once, live_mode, paper_mode, capital, intraday, intraday_interval, log_file):
     """Run live trading via Dhan (SANDBOX by default).
 
     Requires a Dhan account and API credentials in .env:
@@ -1442,6 +1655,7 @@ def dhan_live(ticker, strategies, all_strategies, once, live_mode, intraday, int
       python cli.py dhan-live --strategy macd --once
       python cli.py dhan-live --strategy bollinger_bands
       python cli.py dhan-live -t SBIN.NS -t ICICIBANK.NS -t BHARTIARTL.NS --once
+      python cli.py dhan-live --paper --all     # zero-cost forward paper test
       python cli.py dhan-live --live            # REAL money (use with caution!)
     """
     from strategies.ma_crossover import MACrossoverStrategy
@@ -1450,7 +1664,20 @@ def dhan_live(ticker, strategies, all_strategies, once, live_mode, intraday, int
     from strategies.bollinger_bands import BollingerBandsStrategy
     from strategies.momentum_breakout import MomentumBreakoutStrategy
     from engine.dhan_live_trader import DhanLiveTrader, DhanLiveTraderConfig
+    from engine.dhan_paper_trader import DhanPaperTrader
     from engine.risk_manager import RiskManager
+
+    if paper_mode and live_mode:
+        raise click.UsageError("--paper and --live are mutually exclusive")
+
+    # Start teeing console output to a log file if requested (before any
+    # meaningful output, so the whole session is captured).
+    if log_file:
+        _start_logging(log_file)
+
+    # Prevent an accidental click in the console from freezing the loop
+    # (Windows QuickEdit Mode). Safe no-op elsewhere.
+    _disable_windows_quickedit()
 
     dhan_cfg = CONFIG.get("dhan_live_trading", {})
     api_cfg = CONFIG.get("api", {})
@@ -1471,8 +1698,8 @@ def dhan_live(ticker, strategies, all_strategies, once, live_mode, intraday, int
     tg_api_id = api_cfg.get("tg_api_id", 0)
     tg_api_hash = api_cfg.get("tg_api_hash", "")
 
-    # Validate credentials based on mode
-    if is_sandbox:
+    # Validate credentials based on mode (paper mode needs none)
+    if is_sandbox and not paper_mode:
         # Sandbox: use sandbox creds (preferred) or fall back to production creds
         if not sandbox_client_id and not sandbox_access_token:
             print("  [WARN] No DHAN_SANDBOX credentials set — falling back to production creds.")
@@ -1543,9 +1770,15 @@ def dhan_live(ticker, strategies, all_strategies, once, live_mode, intraday, int
         max_daily_loss_pct=risk_cfg["max_daily_loss_pct"],
         stop_loss_pct=risk_cfg["stop_loss_pct"],
         take_profit_pct=risk_cfg["take_profit_pct"],
-        trailing_stop_enabled=risk_cfg.get("trailing_stop_enabled", False),
-        trailing_stop_pct=risk_cfg.get("trailing_stop_pct", 0.08),
-        trailing_stop_atr_mult=risk_cfg.get("trailing_stop_atr_mult", 2.0),
+        # Trailing-stop settings MUST come from dhan_live_trading, not the
+        # global `risk:` block. This RiskManager is passed explicitly to the
+        # trader, so it OVERRIDES the one DhanLiveTrader builds from its own
+        # config — reading risk_cfg here silently ignored the dhan settings and
+        # ran an ATR trail (mult 2.0, ~0.3%) instead of the intended 0.8% pct
+        # trail. That shipped to live paper on 2026-08-03.
+        trailing_stop_enabled=dhan_cfg.get("trailing_stop_enabled", risk_cfg.get("trailing_stop_enabled", False)),
+        trailing_stop_pct=dhan_cfg.get("trailing_stop_pct", risk_cfg.get("trailing_stop_pct", 0.08)),
+        trailing_stop_atr_mult=dhan_cfg.get("trailing_stop_atr_mult", risk_cfg.get("trailing_stop_atr_mult", 0.0)),
         correlation_enabled=risk_cfg.get("correlation_enabled", False),
         correlation_threshold=risk_cfg.get("correlation_threshold", 0.70),
         max_cluster_allocation_pct=risk_cfg.get("max_cluster_allocation_pct", 0.40),
@@ -1558,7 +1791,7 @@ def dhan_live(ticker, strategies, all_strategies, once, live_mode, intraday, int
         sandbox_client_id=sandbox_client_id,
         sandbox_access_token=sandbox_access_token,
         disable_ssl=dhan_cfg.get("disable_ssl", False),
-        initial_capital=dhan_cfg.get("initial_capital", 100_000),
+        initial_capital=(capital or 10_000.0) if paper_mode else dhan_cfg.get("initial_capital", 100_000),
         max_positions=dhan_cfg.get("max_positions", 5),
         max_allocation_pct=dhan_cfg.get("max_allocation_pct", 0.20),
         max_daily_loss_pct=risk_cfg["max_daily_loss_pct"],
@@ -1572,6 +1805,12 @@ def dhan_live(ticker, strategies, all_strategies, once, live_mode, intraday, int
         min_volatility_pct=dhan_cfg.get("min_volatility_pct", 0.005),
         stop_buying_minutes=dhan_cfg.get("stop_buying_minutes", 900),
         force_square_off_minutes=dhan_cfg.get("force_square_off_minutes", 910),
+        reentry_cooldown_minutes=dhan_cfg.get("reentry_cooldown_minutes", 15),
+        disable_strategy_sells=dhan_cfg.get("disable_strategy_sells", False),
+        trailing_stop_enabled=dhan_cfg.get("trailing_stop_enabled", False),
+        trailing_stop_pct=dhan_cfg.get("trailing_stop_pct", 0.008),
+        trailing_stop_atr_mult=dhan_cfg.get("trailing_stop_atr_mult", 0.0),
+        size_aware_costs=dhan_cfg.get("size_aware_costs", False),
         use_atr_sizing=sizing_cfg.get("use_atr_sizing", False),
         position_risk_pct=sizing_cfg.get("position_risk_pct", 0.01),
         atr_period=sizing_cfg.get("atr_period", 14),
@@ -1582,7 +1821,7 @@ def dhan_live(ticker, strategies, all_strategies, once, live_mode, intraday, int
         tg_api_hash=tg_api_hash,
     )
 
-    mode = "LIVE" if live_mode else "SANDBOX"
+    mode = "PAPER" if paper_mode else ("LIVE" if live_mode else "SANDBOX")
     effective_intraday = intraday or dhan_cfg.get("intraday", False)
     effective_interval = intraday_interval or dhan_cfg.get("intraday_interval", "5m")
     interval_tag = f" [{effective_interval} intraday]" if effective_intraday else ""
@@ -1593,12 +1832,60 @@ def dhan_live(ticker, strategies, all_strategies, once, live_mode, intraday, int
     click.echo()
 
     try:
-        trader = DhanLiveTrader(config, strategies=strat_list, risk_manager=risk)
+        trader_cls = DhanPaperTrader if paper_mode else DhanLiveTrader
+        trader = trader_cls(config, strategies=strat_list, risk_manager=risk)
         trader.run(tickers, once=once)
     except ImportError as e:
         click.echo(f"\nERROR: {e}")
     except Exception as e:
         click.echo(f"\nERROR: {e}")
+
+
+@cli.command("paper-status")
+def paper_status():
+    """Show the Dhan forward paper-trading portfolio (positions, P&L, trades)."""
+    import json
+    from tabulate import tabulate
+
+    state_file = os.path.join(os.path.dirname(__file__), "state", "dhan_paper_state.json")
+    if not os.path.exists(state_file):
+        click.echo("No paper state yet — run: python cli.py dhan-live --paper --all")
+        return
+    with open(state_file) as f:
+        d = json.load(f)
+
+    cash = d.get("cash", 0.0)
+    initial = d.get("initial_capital", 0.0)
+    positions = d.get("positions", {})
+    trades = d.get("trades", [])
+    realized = d.get("realized_pnl", 0.0)
+
+    click.echo(f"\n=== Dhan Paper Portfolio (as of {d.get('last_updated', '?')}) ===\n")
+    click.echo(f"  Initial capital: Rs {initial:,.2f}")
+    click.echo(f"  Cash:            Rs {cash:,.2f}")
+    click.echo(f"  Realized P&L:    Rs {realized:+,.2f}")
+
+    if positions:
+        rows = [[b, p["qty"], f"{p['avg']:,.2f}", p.get("entry", "?")]
+                for b, p in positions.items()]
+        click.echo("\n  Open positions:")
+        click.echo(tabulate(rows, headers=["Symbol", "Qty", "Avg Entry", "Entered"],
+                            tablefmt="rounded_outline"))
+    else:
+        click.echo("  Open positions:  none")
+
+    if trades:
+        sells = [t for t in trades if t["side"] == "SELL"]
+        wins = sum(1 for t in sells if t.get("pnl", 0) > 0)
+        click.echo(f"\n  Trades: {len(trades)} total, {len(sells)} closed"
+                   + (f", win rate {wins/len(sells):.0%}" if sells else ""))
+        rows = [[t["ts"], t["side"], t["symbol"], t["qty"], f"{t['price']:,.2f}",
+                 f"{t.get('pnl', 0):+,.2f}" if t["side"] == "SELL" else ""]
+                for t in trades[-15:]]
+        click.echo("\n  Last 15 trades:")
+        click.echo(tabulate(rows, headers=["Time", "Side", "Symbol", "Qty", "Price", "P&L"],
+                            tablefmt="rounded_outline"))
+    click.echo()
 
 
 @cli.command()
@@ -1706,6 +1993,328 @@ def crypto_live(ticker, strategy, all_strategies, interval, once, live_mode):
 
     trader = BinanceLiveTrader(config, strategies=strat_list)
     trader.run(tickers, once=once)
+
+
+def _day_trade_strategy_from_config(dt_cfg: dict):
+    """Build a ParallelDayTradeStrategy from the day_trading config section."""
+    from strategies.parallel_day_trade import ParallelDayTradeStrategy
+
+    return ParallelDayTradeStrategy(
+        entry_threshold=dt_cfg.get("entry_threshold", 0.2),
+        exit_threshold=dt_cfg.get("exit_threshold", -0.2),
+        perf_window=dt_cfg.get("perf_window", 10),
+        perf_sensitivity=dt_cfg.get("perf_sensitivity", 100.0),
+        min_weight=dt_cfg.get("min_weight", 0.25),
+        max_weight=dt_cfg.get("max_weight", 3.0),
+        min_trades_for_weight=dt_cfg.get("min_trades_for_weight", 3),
+        square_off=dt_cfg.get("square_off", True),
+        no_entry_last_bars=dt_cfg.get("no_entry_last_bars", 6),
+        min_volatility_pct=dt_cfg.get("min_volatility_pct", 0.0),
+        trend_filter_period=dt_cfg.get("trend_filter_period", 200),
+    )
+
+
+def _day_trade_risk_manager(dt_cfg: dict):
+    """Build the intraday-tight RiskManager for day trading."""
+    from engine.risk_manager import RiskManager
+
+    r = dt_cfg.get("risk", {}) or {}
+    return RiskManager(
+        max_positions=r.get("max_positions", 1),
+        max_allocation_pct=r.get("max_allocation_pct", 0.95),
+        max_daily_loss_pct=r.get("max_daily_loss_pct", 0.02),
+        stop_loss_pct=r.get("stop_loss_pct", 0.01),
+        take_profit_pct=r.get("take_profit_pct", 0.025),
+        trailing_stop_enabled=r.get("trailing_stop_enabled", True),
+        trailing_stop_pct=r.get("trailing_stop_pct", 0.008),
+    )
+
+
+def _load_day_trade_data(ticker: str, interval: str, days, csv_file: str):
+    """Load intraday OHLCV bars from Yahoo Finance or a local CSV."""
+    import pandas as pd
+
+    if csv_file:
+        df = pd.read_csv(csv_file, index_col=0, parse_dates=True)
+        df.columns = [c.lower() for c in df.columns]
+        missing = {"open", "high", "low", "close"} - set(df.columns)
+        if missing:
+            raise click.ClickException(f"CSV missing columns: {sorted(missing)}")
+        if "volume" not in df.columns:
+            df["volume"] = 0
+        return df[["open", "high", "low", "close", "volume"]]
+
+    from data.stocks import fetch_intraday_data
+    return fetch_intraday_data(ticker, interval=interval, days=days)
+
+
+@cli.command(name="day-trade")
+@click.option("--ticker", "-t", default="AAPL", help="Symbol to day trade (one chart)")
+@click.option("--interval", "-i", default=None,
+              type=click.Choice(["1m", "2m", "5m", "15m", "30m", "1h"]),
+              help="Intraday candle interval (default from config: 5m)")
+@click.option("--days", "-d", default=None, type=int,
+              help="Days of intraday history (default: Yahoo's max for interval)")
+@click.option("--capital", default=None, type=float, help="Initial capital")
+@click.option("--commission", default=None, type=float,
+              help="Commission+slippage per side (decimal, e.g. 0.0005)")
+@click.option("--csv-file", default="", help="Backtest a local OHLCV CSV instead of fetching")
+@click.option("--compare", is_flag=True,
+              help="Also run each strategy standalone + buy & hold for comparison")
+@click.option("--chart/--no-chart", default=True, help="Save the parallel-strategy chart PNG")
+@click.option("--signal", "signal_only", is_flag=True,
+              help="Print the CURRENT buy/sell/hold decision for the latest bar and exit")
+def day_trade(ticker, interval, days, capital, commission, csv_file, compare, chart, signal_only):
+    """Day-trade ONE chart with 5 strategies running in parallel.
+
+    All strategies vote on every bar; votes are weighted by each strategy's
+    recent profitability on this exact chart. The bot buys on weighted
+    consensus, exits on consensus loss / stop / take-profit, and always
+    squares off before the session close (no overnight positions).
+    """
+    from tabulate import tabulate
+    from engine.paper_trader import PaperTrader
+    from strategies.base import Signal
+
+    dt_cfg = CONFIG.get("day_trading", {}) or {}
+    interval = interval or dt_cfg.get("interval", "5m")
+    capital = capital if capital is not None else dt_cfg.get("initial_capital", 100_000.0)
+    commission = commission if commission is not None else dt_cfg.get("commission_pct", 0.0005)
+
+    click.echo("\n=== Parallel Day-Trade Bot ===\n")
+    click.echo(f"  Ticker:     {ticker}")
+    click.echo(f"  Interval:   {interval}")
+    click.echo(f"  Capital:    ${capital:,.0f}")
+    click.echo(f"  Commission: {commission:.4%} per side\n")
+
+    click.echo(f"  Fetching {ticker} {interval} bars ... ", nl=False)
+    try:
+        df = _load_day_trade_data(ticker, interval, days or dt_cfg.get("days"), csv_file)
+    except Exception as e:
+        raise click.ClickException(f"data fetch failed: {e}")
+    sessions = len(set(d.date() for d in df.index))
+    click.echo(f"+ {len(df)} bars across {sessions} sessions "
+               f"({df.index[0]} -> {df.index[-1]})\n")
+
+    strategy = _day_trade_strategy_from_config(dt_cfg)
+    trader = PaperTrader(
+        strategy=strategy,
+        risk_manager=_day_trade_risk_manager(dt_cfg),
+        initial_capital=capital,
+        commission_pct=commission,
+        record_bar_equity=True,
+    )
+    result = trader.run(df, ticker=ticker)
+
+    # ── Current-signal mode: report the decision on the latest bar ────
+    if signal_only:
+        h = strategy.history
+        decision = h["decision"][-1]
+        score = h["score"][-1]
+        click.echo(f"  Latest bar: {h['timestamp'][-1]}  close=${df['close'].iloc[-1]:,.2f}")
+        click.echo(f"  Consensus score: {score:+.3f} "
+                   f"(entry >= {strategy.entry_threshold:+.2f}, "
+                   f"exit <= {strategy.exit_threshold:+.2f})\n")
+        rows = [[r["strategy"], r["stance"], f"{r['weight']:.2f}",
+                 r["virtual_trades"], f"{r['recent_avg_return']:+.3%}",
+                 f"{r['recent_win_rate']:.0%}"]
+                for r in strategy.performance_report()]
+        click.echo(tabulate(rows, headers=["Strategy", "Stance", "Weight",
+                                           "V-Trades", "Recent Avg Ret", "Recent WR"],
+                            tablefmt="grid"))
+        name = {Signal.BUY: "BUY", Signal.SELL: "SELL", Signal.HOLD: "HOLD"}[decision]
+        click.echo(f"\n  >>> CURRENT DECISION: {name} <<<")
+        if decision == Signal.HOLD:
+            state = "LONG (holding)" if strategy._in_position else "FLAT (waiting)"
+            click.echo(f"      Position state: {state}")
+        return
+
+    # ── Backtest report ────────────────────────────────────────────────
+    click.echo(result.summary())
+
+    click.echo("\n=== Parallel Strategy Panel (final state) ===\n")
+    rows = [[r["strategy"], r["virtual_trades"], f"{r['recent_avg_return']:+.3%}",
+             f"{r['recent_win_rate']:.0%}", f"{r['weight']:.2f}"]
+            for r in strategy.performance_report()]
+    click.echo(tabulate(rows, headers=["Strategy", "Virtual Trades", "Recent Avg Ret",
+                                       "Recent WR", "Final Weight"], tablefmt="grid"))
+
+    bh_return = df["close"].iloc[-1] / df["close"].iloc[0] - 1.0
+    click.echo(f"\n  Bot return:        {result.portfolio.total_pnl_pct:+.2%}")
+    click.echo(f"  Buy & hold return: {bh_return:+.2%}")
+
+    # ── Optional: compare against each strategy standalone ────────────
+    if compare:
+        from strategies.parallel_day_trade import build_intraday_strategies
+
+        click.echo("\n=== Standalone Strategy Comparison (same risk limits) ===\n")
+        comp_rows = [["ParallelDayTrade (combined)", result.total_trades,
+                      f"{result.win_rate:.1%}",
+                      f"{result.portfolio.total_pnl_pct:+.2%}",
+                      f"{result.portfolio.max_drawdown:+.2%}",
+                      f"{result.sharpe_ratio:.2f}"]]
+        for solo in build_intraday_strategies():
+            solo_trader = PaperTrader(
+                strategy=solo,
+                risk_manager=_day_trade_risk_manager(dt_cfg),
+                initial_capital=capital,
+                commission_pct=commission,
+            )
+            r = solo_trader.run(df.copy(), ticker=ticker)
+            comp_rows.append([solo.name, r.total_trades, f"{r.win_rate:.1%}",
+                              f"{r.portfolio.total_pnl_pct:+.2%}",
+                              f"{r.portfolio.max_drawdown:+.2%}",
+                              f"{r.sharpe_ratio:.2f}"])
+        comp_rows.append(["Buy & Hold", 1, "-", f"{bh_return:+.2%}", "-", "-"])
+        click.echo(tabulate(comp_rows,
+                            headers=["Strategy", "Trades", "Win Rate", "Return",
+                                     "Max DD", "Sharpe"], tablefmt="grid"))
+
+    # ── Chart: everything on one figure ────────────────────────────────
+    if chart:
+        from engine.charts import plot_parallel_day_trade_chart
+
+        out_dir = CONFIG.get("charts", {}).get("output_dir", "charts")
+        safe = ticker.replace("/", "_").replace(".", "_")
+        path = os.path.join(out_dir, f"{safe}_day_trade_{interval}.png")
+        saved = plot_parallel_day_trade_chart(df, result, strategy, save_path=path)
+        if saved:
+            click.echo(f"\n  [Chart] Saved parallel-strategy chart -> {saved}")
+
+
+@cli.command("telegram-setup")
+def telegram_setup():
+    """One-time Telegram setup + test message (no @BotFather needed).
+
+    Uses the Telethon user-account backend: sends alerts to your own
+    Telegram "Saved Messages" using API_ID/API_HASH from
+    https://my.telegram.org/apps. Run this ONCE to log in (it prompts for
+    your phone number + the code Telegram texts you) and to confirm it
+    works — after that the bot reuses the saved session silently.
+
+    Setup:
+      1. Go to https://my.telegram.org -> "API development tools"
+      2. Create an app (any name), copy the api_id and api_hash
+      3. Add to your .env file:
+             TG_API_ID=1234567
+             TG_API_HASH=abc123...
+      4. Run: python cli.py telegram-setup
+    """
+    api_cfg = CONFIG.get("api", {})
+    tg_api_id = api_cfg.get("tg_api_id", 0)
+    tg_api_hash = api_cfg.get("tg_api_hash", "")
+    bot_token = api_cfg.get("telegram_bot_token", "")
+    chat_id = api_cfg.get("telegram_chat_id", "")
+
+    test_msg = (
+        "✅ Trading bot connected to Telegram\n"
+        "You'll get an end-of-day summary here after each paper session."
+    )
+
+    # Prefer the user-account (Telethon) backend — no BotFather.
+    if tg_api_id and tg_api_hash:
+        try:
+            import telethon  # noqa: F401
+        except ImportError:
+            click.echo("  [ERROR] Telethon isn't installed. Run:  pip install -r requirements.txt")
+            return
+        from engine.notifier import TelegramUserNotifier
+
+        click.echo("  Using Telegram USER account (Telethon — no bot needed).")
+        click.echo("  First run will ask for your phone number and the login code Telegram sends you.\n")
+        notifier = TelegramUserNotifier(
+            api_id=int(tg_api_id), api_hash=str(tg_api_hash),
+        )
+        ok = notifier.send(test_msg)
+        if ok:
+            click.echo("\n  ✅ Success! Check your Telegram 'Saved Messages' for the test message.")
+            click.echo("  The bot will now send summaries there automatically — no further setup.")
+        else:
+            click.echo("\n  ❌ Could not send. Double-check TG_API_ID / TG_API_HASH in .env.")
+        return
+
+    # Fallback: Bot API (needs @BotFather token + chat id)
+    if bot_token and chat_id:
+        from engine.notifier import TelegramNotifier
+
+        click.echo("  Using Telegram BOT API (@BotFather token).")
+        notifier = TelegramNotifier(bot_token=bot_token, chat_id=chat_id)
+        if notifier.send(test_msg):
+            click.echo("  ✅ Success! Check your Telegram for the test message.")
+        else:
+            click.echo("  ❌ Could not send. Check TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID in .env.")
+        return
+
+    click.echo("  [ERROR] No Telegram credentials found in .env.")
+    click.echo("  Recommended (no BotFather): get api_id + api_hash from https://my.telegram.org/apps,")
+    click.echo("  then add TG_API_ID and TG_API_HASH to your .env and re-run this command.")
+
+
+@cli.command("fill-quality")
+@click.option("--file", "path", default="", help="Path to fill_quality.csv")
+def fill_quality(path):
+    """Measure the paper-to-live execution gap (slippage).
+
+    Paper fills at the last evaluated close, so its slippage is 0 by
+    construction — this only means something in LIVE mode. It is the
+    measurement that decides whether a paper edge survives real execution:
+    roughly 0.02% of adverse slippage per round trip is enough to erase the
+    best edge observed so far, so this is the number to watch when going live.
+    """
+    import csv
+    from collections import defaultdict
+
+    path = path or os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "state", "fill_quality.csv")
+    if not os.path.exists(path):
+        click.echo(f"No fill log yet at {path}")
+        click.echo("It is written automatically once the bot fills orders.")
+        return
+
+    rows = list(csv.DictReader(open(path)))
+    if not rows:
+        click.echo("Fill log is empty.")
+        return
+
+    by_mode = defaultdict(list)
+    for r in rows:
+        try:
+            by_mode[r["mode"]].append((float(r["slippage_pct"]), float(r["notional"]),
+                                       r["side"]))
+        except (ValueError, KeyError):
+            continue
+
+    click.echo(f"\n  Fill quality — {len(rows)} fills from {path}\n")
+    click.echo(f"  {'mode':8}{'fills':>7}{'avg slip':>11}{'median':>10}"
+               f"{'worst':>10}{'cost/day*':>12}")
+    click.echo("  " + "-" * 58)
+    for mode, vals in by_mode.items():
+        slips = sorted(v[0] for v in vals)
+        avg = sum(slips) / len(slips)
+        med = slips[len(slips) // 2]
+        worst = slips[-1]
+        avg_notional = sum(v[1] for v in vals) / len(vals)
+        # 20 round trips/day = 40 fills
+        daily = avg / 100 * avg_notional * 40
+        click.echo(f"  {mode:8}{len(vals):>7}{avg:>10.4f}%{med:>9.4f}%"
+                   f"{worst:>9.4f}%{daily:>12,.0f}")
+    click.echo("\n  *estimated daily rupee drag at 20 round trips/day on the")
+    click.echo("   average observed notional. POSITIVE slippage = worse than expected.")
+
+    live = by_mode.get("LIVE") or by_mode.get("SANDBOX")
+    if live:
+        avg = sum(v[0] for v in live) / len(live)
+        click.echo()
+        if avg <= 0.01:
+            click.echo("  VERDICT: slippage is negligible — a paper edge should survive.")
+        elif avg <= 0.03:
+            click.echo("  VERDICT: modest slippage — recheck that the edge still clears it.")
+        else:
+            click.echo("  VERDICT: slippage is LARGE. A paper edge of this size would not")
+            click.echo("  survive live execution. Do not scale capital on paper results.")
+    else:
+        click.echo("\n  Only PAPER fills so far (slippage is 0 by construction).")
+        click.echo("  Numbers become meaningful once you trade live.")
 
 
 if __name__ == "__main__":

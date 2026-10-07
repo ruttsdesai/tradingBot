@@ -35,6 +35,7 @@ nul
 
 # Portfolio state (regenerated on each run)
 state/portfolio_state.json
+state/dhan_paper_state.json
 
 # Jupyter
 .ipynb_checkpoints/
@@ -43,3 +44,19 @@ state/portfolio_state.json
 dist/
 build/
 *.egg-info/
+
+# Synthetic validation data (regenerate: python scripts/validate_day_trade.py --save-csv)
+data/synthetic/
+
+# Cached real intraday data (fetched ad-hoc, regeneratable)
+data/real5m/
+
+# Session log files (bot console output)
+logs/
+
+# Lab cached bars + experiment outputs
+data/lab_cache/
+lab/results/
+
+# Cross-sectional universe cache (re-fetchable; ~40 tickers x 2 intervals)
+data/xsec_cache/
