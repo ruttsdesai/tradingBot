@@ -162,6 +162,14 @@ cloud, bands, diamonds, QQE and S&R layers are visual context.
 | Walk-forward over 160 settings × 4 timeframes | **no setting positive on held-out data with significance** |
 | Daily long-only, 5 years | +0.1%/yr vs +5.8%/yr buy-and-hold |
 
+**SL / TP tracker** (bottom-left panel). For every closed signal it records which
+levels price *reached* while the trade was open — SL, TP1, TP2, TP3 — whether or not
+that level is set to close the trade, which of TP1 and SL was hit *first*, and how
+the trade *actually* closed (signal / SL / target / 15:10). Counts cover only the
+history loaded on the chart. Validated against an independent 4-year XAUUSD analysis
+(identical on 1h, 4h and daily): expect roughly SL 0–2%, TP1 ~30%, TP2 ~13%, TP3 ~9%,
+and ~70% reaching neither.
+
 **Your own trade ("My trade" in Settings).** TradingView gives indicators no access
 to your account, orders or screen, so the indicator cannot detect an order by
 itself. Set *My position* (Long/Short) and *My entry price* when you open a trade,
