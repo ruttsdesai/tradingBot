@@ -29,7 +29,7 @@ r2        = input.float(1.2, "TP2 (R multiple)", step = 0.1, group = grpRisk)
 r3        = input.float(1.5, "TP3 (R multiple)", step = 0.1, group = grpRisk)
 showLvls  = input.bool(true, "Draw entry / stop / targets for the open trade", group = grpRisk)
 nseMode   = input.bool(true, "NSE intraday rules (no entries after 15:00, flat at 15:10 IST)", group = grpRisk,
-     tooltip = "Applies on intraday charts only. Turn off for crypto or for holding overnight.")
+     tooltip = "Only ever applies to NSE/BSE symbols on intraday charts. Ignored automatically on gold, forex and crypto.")
 showStats = input.bool(true, "Show stats panel", group = grpRisk)
 
 grpVis = "Visuals"
@@ -121,7 +121,11 @@ barcolor(close > stLine ? #00DBFF99 : #E93E6399)
 // marked target hits and never showed a losing exit.
 cost = costPct / 100.0
 int bm = hour(time, "Asia/Kolkata") * 60 + minute(time, "Asia/Kolkata")
-bool nseOn = nseMode and timeframe.isintraday
+// Indian-market session rules must never touch other markets. They used to
+// apply to ANY intraday chart, which on XAUUSD blocked every trade from
+// 15:00 to midnight IST (05:30-14:30 New York) and force-closed at 15:10.
+bool isIndian = syminfo.prefix == "NSE" or syminfo.prefix == "BSE"
+bool nseOn = nseMode and timeframe.isintraday and isIndian
 bool sqOffBar = nseOn and bm >= 15 * 60 + 10
 bool lateBar  = nseOn and bm >= 15 * 60
 
@@ -303,7 +307,7 @@ if barstate.islast
                      style = label.style_label_left, color = color.new(c, 0), textcolor = color.white, size = size.small))
 
 // ================================================================ stats ====
-var table panel = table.new(position.bottom_right, 2, 9, border_width = 1, frame_color = color.gray, frame_width = 1)
+var table panel = table.new(position.bottom_right, 2, 10, border_width = 1, frame_color = color.gray, frame_width = 1)
 if showStats and barstate.islast
     string act = stopTouchLive ? "STOP HIT"
          : tgtTouchLive ? "TARGET HIT"
@@ -339,6 +343,8 @@ if showStats and barstate.islast
     table.cell(panel, 1, 7, str.tostring(costPct, "0.00") + "% / side", text_color = color.gray, text_size = size.small, text_halign = text.align_right)
     table.cell(panel, 0, 8, "Fills", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
     table.cell(panel, 1, 8, "next bar open", text_color = color.gray, text_size = size.small, text_halign = text.align_right)
+    table.cell(panel, 0, 9, "NSE 15:00/15:10 rules", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
+    table.cell(panel, 1, 9, nseOn ? "ON" : "off", text_color = nseOn ? color.orange : color.gray, text_size = size.small, text_halign = text.align_right)
 
 // ================================================================ cloud ====
 candle = ta.sma(close, 7)
