@@ -53,3 +53,31 @@ list; FEMA). Legal routes: MCX gold futures (GOLD, GOLDM, GOLDPETAL — availabl
 on Dhan) or gold ETFs. Stage 1 on XAUUSD answers whether the idea works at all;
 if it passes, Stages 2–4 must use MCX prices, costs and session hours
 (09:00–23:30 IST).
+
+---
+
+# Stage 1 RESULT — 2026-10-07: **FAIL on every timeframe → STOP**
+
+Data: Dukascopy spot XAUUSD hourly BID, 06 Oct 2021 → 06 Oct 2026 (32,637 bars,
+no gaps beyond weekends/holidays). Gold $1,759 → $4,166. Buy-and-hold: **+137%,
+CAGR +18.8%, Sharpe 1.02, max drawdown −27%.** Rules above were not edited.
+
+**Pre-registered subject (long + short):**
+
+| | Rule 1: per-trade t @0.03%/side | Rule 2: both halves positive | Rule 3: timing skill both sides / Sharpe > B&H | Verdict |
+|---|---|---|---|---|
+| 1-hour | −1.45 ✗ | −8.3% / +5.4% CAGR ✗ | +0.13 / +0.12 bp (t ≈ 0.6) — positive, not distinguishable from 0; Sharpe 0.01 | **FAIL** |
+| 4-hour | +0.40 ✗ | −3.2% / +11.8% ✗ | +0.41 / +0.46 bp (t ≈ 0.6) — same; Sharpe 0.33 | **FAIL** |
+| Daily | −0.26 ✗ | +4.8% / −9.7% ✗ | −0.74 / −0.78 bp ✗; Sharpe −0.07 | **FAIL** |
+
+Five-year totals (long+short, 0.01%/side): 1h −7%, 4h +24%, daily −14% — against +137% for holding.
+
+**Supplementary, NOT pre-registered — long-only:** 1h +57%, 4h +79%, daily +48% at
+0.01%/side (Sharpe 0.76 / 0.99 / 0.65; in the market ~51% of the time). Every one is
+below buy-and-hold on return and Sharpe. Control: sliding the same in/out pattern to
+1,000 random start points, random timing matched or beat the real timing 16% (1h),
+20% (4h) and 55% (daily) of the time. Most of the long-only return is simply being long
+gold about half the time in a bull market; the timing on 1h/4h is suggestive, not
+significant (per-trade t 0.73 / 1.61 at 0.03%), and on 1h costs consume most of it.
+
+Per the plan: no parameter tuning, Stages 2–4 not run.
