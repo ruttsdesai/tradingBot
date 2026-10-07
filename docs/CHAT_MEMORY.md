@@ -726,8 +726,10 @@ but t<=0.62, also noise. VWAP, the one I flagged as most plausible, showed nothi
   user's own practice, not a rescue of the strategy -- judge it as such.
 - User will send: (1) chart screenshot with both panels + settings line, (2) TradingView Paper Trading History
   (CSV export or screenshots), (3) `docs/paper_trade_log.csv` filled in.
-- When results arrive: compare the tracker's reach rates with the 4-year baseline (1h: SL 2%, TP1 30%, TP2 13%,
-  TP3 9%, neither 68%; 5m untested on gold -- NSE 5m was TP1 19%, SL 0.4%); compare the user's fills vs the
+- Tracker is now SIGNAL ACCURACY (user: SL/TP reach rows measured nothing -- stop ~5 ATR, hit 0-2%).
+  "Correct" = moved the signal's way entry->exit, BEFORE costs. 5y gold baseline: 1h 37.3% (buys 41 / sells 33),
+  right +0.97% (peak +1.93%), wrong -0.54% (peak +0.37%); 4h 38.7%; daily 34.8%. 5m untested on gold.
+- When results arrive: compare the tracker's accuracy with that baseline; compare the user's fills vs the
   indicator's next-open fills (slippage/timing); separate trades where they followed vs overrode the signal;
   a week is ~tens of trades -- report it as a sample, not a verdict.
 

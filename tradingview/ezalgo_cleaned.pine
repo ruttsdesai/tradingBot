@@ -31,8 +31,8 @@ showLvls  = input.bool(true, "Draw entry / stop / targets for the open trade", g
 nseMode   = input.bool(true, "NSE intraday rules (no entries after 15:00, flat at 15:10 IST)", group = grpRisk,
      tooltip = "Only ever applies to NSE/BSE symbols on intraday charts. Ignored automatically on gold, forex and crypto.")
 showStats = input.bool(true, "Show stats panel", group = grpRisk)
-showTracker = input.bool(true, "Show SL / TP tracker", group = grpRisk,
-     tooltip = "Counts, for every closed signal, which levels price reached and which came first. Covers only the history loaded on the chart.")
+showTracker = input.bool(true, "Show signal accuracy tracker", group = grpRisk,
+     tooltip = "How often the indicator's signals were right (price moved their way before the exit), before costs. Covers only the history loaded on the chart.")
 
 // TradingView gives indicators no access to your account, orders or screen,
 // so your own trade has to be entered here. Set it when you open a trade and
@@ -92,19 +92,24 @@ f_donchian(int len) =>
 f_pct(float x) =>
     (x >= 0 ? "+" : "") + str.tostring(x * 100, "0.00") + "%"
 
-// SL/TP tracker: adds one CLOSED trade to the running tallies. Arrays are
+// Accuracy tracker: adds one CLOSED signal to the running tallies. Arrays are
 // passed by reference, so this updates them in place.
-//   lvlHit (per trade): [SL, TP1, TP2, TP3] reached while the trade was open
-//   tally: 0-3 reached SL/TP1/TP2/TP3 | 4 TP1 first | 5 SL first | 6 both on one candle
-//          7 reached neither | 8 closed by signal | 9 by SL | 10 by target | 11 by 15:10
-f_tally(array<int> tally, array<bool> lvlHit, int firstHit, string why) =>
-    for i = 0 to 3
-        if array.get(lvlHit, i)
-            array.set(tally, i, array.get(tally, i) + 1)
-    int k = firstHit == 1 ? 4 : firstHit == -1 ? 5 : firstHit == 2 ? 6 : 7
-    array.set(tally, k, array.get(tally, k) + 1)
-    int e = why == "Exit" ? 8 : why == "SL" ? 9 : why == "15:10" ? 11 : 10
-    array.set(tally, e, array.get(tally, e) + 1)
+// A signal is CORRECT if price moved in its direction between the indicator's
+// entry and exit -- measured BEFORE costs, so it is judged on direction alone.
+//   tally: 0 buy signals | 1 buys correct | 2 sell signals | 3 sells correct
+//   acc:   0 sum of final moves when correct | 1 ... when wrong
+//          2 sum of best (peak) moves when correct | 3 ... when wrong
+f_tally(array<int> tally, array<float> acc, int dir, float ret, float cst, float best) =>
+    float g = ret + 2 * cst                 // move in the signal's direction, before costs
+    int b = dir == 1 ? 0 : 2
+    array.set(tally, b, array.get(tally, b) + 1)
+    if g > 0
+        array.set(tally, b + 1, array.get(tally, b + 1) + 1)
+        array.set(acc, 0, array.get(acc, 0) + g)
+        array.set(acc, 2, array.get(acc, 2) + best)
+    else
+        array.set(acc, 1, array.get(acc, 1) + g)
+        array.set(acc, 3, array.get(acc, 3) + best)
 
 // "12  (4%)" style count with share of closed trades
 f_cp(int c, int n) =>
@@ -184,10 +189,10 @@ var float sumR = 0.0
 var float grossW = 0.0
 var float grossL = 0.0
 
-// SL/TP tracker state (see f_tally)
-var array<bool> lvlHit = array.from(false, false, false, false)
-var int   firstHit = 0          // 0 neither yet | 1 TP1 first | -1 SL first | 2 both on one candle
-var array<int> tally = array.new<int>(12, 0)
+// Accuracy tracker state (see f_tally)
+var array<int>   tally = array.new<int>(4, 0)
+var array<float> acc = array.new<float>(4, 0.0)
+var float mfe = 0.0             // best move in the signal's favour so far, this trade
 var int   firstEntryTime = na
 
 if barstate.isconfirmed
@@ -200,7 +205,7 @@ if barstate.isconfirmed
         grossW += math.max(r, 0.0)
         grossL += math.max(-r, 0.0)
         f_exitLabel(open, r, "15:10")
-        f_tally(tally, lvlHit, firstHit, "15:10")
+        f_tally(tally, acc, pos, r, cost, mfe)
         evSq := true
         pos := 0
 
@@ -215,7 +220,7 @@ if barstate.isconfirmed
                 grossW += math.max(r, 0.0)
                 grossL += math.max(-r, 0.0)
                 f_exitLabel(open, r, "Exit")
-                f_tally(tally, lvlHit, firstHit, "Exit")
+                f_tally(tally, acc, pos, r, cost, mfe)
                 pos := 0
             if pendDir != 0 and pos == 0
                 pos := pendDir
@@ -227,31 +232,16 @@ if barstate.isconfirmed
                 tp2Px := entryPx + pendDir * risk * r2
                 tp3Px := entryPx + pendDir * risk * r3
                 tgtPx := tpSel == "TP1" ? tp1Px : tpSel == "TP2" ? tp2Px : tpSel == "TP3" ? tp3Px : na
-                array.fill(lvlHit, false)
-                firstHit := 0
+                mfe := 0.0
                 if na(firstEntryTime)
                     firstEntryTime := time
         pendExit := false
         pendDir := 0
 
-    // Tracker: which levels has price reached while this trade is open?
-    // Counted whether or not the level is set to close the trade, so it shows
-    // how often each level WOULD have been hit.
+    // Tracker: the best move in the signal's favour while this trade is open
     if pos != 0
-        bool slNow  = pos == 1 ? low <= stopPx : high >= stopPx
-        bool tp1Now = pos == 1 ? high >= tp1Px : low <= tp1Px
-        bool tp2Now = pos == 1 ? high >= tp2Px : low <= tp2Px
-        bool tp3Now = pos == 1 ? high >= tp3Px : low <= tp3Px
-        if slNow
-            array.set(lvlHit, 0, true)
-        if tp1Now
-            array.set(lvlHit, 1, true)
-        if tp2Now
-            array.set(lvlHit, 2, true)
-        if tp3Now
-            array.set(lvlHit, 3, true)
-        if firstHit == 0 and (slNow or tp1Now)
-            firstHit := slNow and tp1Now ? 2 : tp1Now ? 1 : -1
+        float fav = pos == 1 ? (high - entryPx) / entryPx : (entryPx - low) / entryPx
+        mfe := math.max(mfe, fav)
 
     // 3. Stop / target inside this bar. Stop is checked first (conservative),
     //    and a gap through a level fills at the open, not at the level.
@@ -265,7 +255,7 @@ if barstate.isconfirmed
             grossW += math.max(r, 0.0)
             grossL += math.max(-r, 0.0)
             f_exitLabel(px, r, "SL")
-            f_tally(tally, lvlHit, firstHit, "SL")
+            f_tally(tally, acc, pos, r, cost, mfe)
             evSL := true
             pos := 0
         else if not na(tgtPx) and high >= tgtPx
@@ -277,7 +267,7 @@ if barstate.isconfirmed
             grossW += math.max(r, 0.0)
             grossL += math.max(-r, 0.0)
             f_exitLabel(px, r, tpSel)
-            f_tally(tally, lvlHit, firstHit, tpSel)
+            f_tally(tally, acc, pos, r, cost, mfe)
             evTP := true
             pos := 0
     else if pos == -1
@@ -290,7 +280,7 @@ if barstate.isconfirmed
             grossW += math.max(r, 0.0)
             grossL += math.max(-r, 0.0)
             f_exitLabel(px, r, "SL")
-            f_tally(tally, lvlHit, firstHit, "SL")
+            f_tally(tally, acc, pos, r, cost, mfe)
             evSL := true
             pos := 0
         else if not na(tgtPx) and low <= tgtPx
@@ -302,7 +292,7 @@ if barstate.isconfirmed
             grossW += math.max(r, 0.0)
             grossL += math.max(-r, 0.0)
             f_exitLabel(px, r, tpSel)
-            f_tally(tally, lvlHit, firstHit, tpSel)
+            f_tally(tally, acc, pos, r, cost, mfe)
             evTP := true
             pos := 0
 
@@ -460,32 +450,38 @@ if showStats and barstate.islast
     table.cell(panel, 0, 10, "NSE 15:00/15:10 rules", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
     table.cell(panel, 1, 10, nseOn ? "ON" : "off", text_color = nseOn ? color.orange : color.gray, text_size = size.small, text_halign = text.align_right)
 
-// ======================================================= SL / TP tracker ====
-var table trk = table.new(position.bottom_left, 2, 8, border_width = 1, frame_color = color.gray, frame_width = 1)
+// ================================================ signal accuracy tracker ====
+// Was each signal RIGHT? Judged on direction only (before costs); the stats
+// panel shows what it earned after costs.
+var table trk = table.new(position.bottom_left, 2, 6, border_width = 1, frame_color = color.gray, frame_width = 1)
 if showTracker and barstate.islast
-    int n = nTr
+    int nBuy  = array.get(tally, 0)
+    int cBuy  = array.get(tally, 1)
+    int nSell = array.get(tally, 2)
+    int cSell = array.get(tally, 3)
+    int nAll  = nBuy + nSell
+    int cAll  = cBuy + cSell
+    float avgW = cAll > 0 ? array.get(acc, 0) / cAll : na
+    float avgL = nAll - cAll > 0 ? array.get(acc, 1) / (nAll - cAll) : na
+    float peakW = cAll > 0 ? array.get(acc, 2) / cAll : na
+    float peakL = nAll - cAll > 0 ? array.get(acc, 3) / (nAll - cAll) : na
     string since = na(firstEntryTime) ? "" : "  since " + str.format_time(firstEntryTime, "dd MMM yyyy", syminfo.timezone)
-    string firstTxt = "TP1 " + str.tostring(array.get(tally, 4)) + "  |  SL " + str.tostring(array.get(tally, 5)) +
-         (array.get(tally, 6) > 0 ? "  |  same candle " + str.tostring(array.get(tally, 6)) : "")
-    string closedBy = "signal " + str.tostring(array.get(tally, 8)) + "  |  SL " + str.tostring(array.get(tally, 9)) +
-         "  |  target " + str.tostring(array.get(tally, 10)) +
-         (nseOn or array.get(tally, 11) > 0 ? "  |  15:10 " + str.tostring(array.get(tally, 11)) : "")
-    table.cell(trk, 0, 0, "SL / TP TRACKER", text_color = color.white, bgcolor = color.new(color.gray, 20), text_halign = text.align_left)
-    table.cell(trk, 1, 0, n > 0 ? str.tostring(n) + " closed signals" + since : "no closed signals yet", text_color = color.white, bgcolor = color.new(color.gray, 20), text_halign = text.align_right)
-    table.cell(trk, 0, 1, "Reached SL", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
-    table.cell(trk, 1, 1, f_cp(array.get(tally, 0), n), text_color = #E93E63, text_size = size.small, text_halign = text.align_right)
-    table.cell(trk, 0, 2, "Reached TP1", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
-    table.cell(trk, 1, 2, f_cp(array.get(tally, 1), n), text_color = #00D9FC, text_size = size.small, text_halign = text.align_right)
-    table.cell(trk, 0, 3, "Reached TP2", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
-    table.cell(trk, 1, 3, f_cp(array.get(tally, 2), n), text_color = #00D9FC, text_size = size.small, text_halign = text.align_right)
-    table.cell(trk, 0, 4, "Reached TP3", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
-    table.cell(trk, 1, 4, f_cp(array.get(tally, 3), n), text_color = #00D9FC, text_size = size.small, text_halign = text.align_right)
-    table.cell(trk, 0, 5, "Hit first", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
-    table.cell(trk, 1, 5, firstTxt, text_size = size.small, text_halign = text.align_right)
-    table.cell(trk, 0, 6, "Reached neither", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
-    table.cell(trk, 1, 6, f_cp(array.get(tally, 7), n), text_size = size.small, text_halign = text.align_right)
-    table.cell(trk, 0, 7, "Actually closed by", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
-    table.cell(trk, 1, 7, closedBy, text_size = size.small, text_halign = text.align_right)
+    color hdr = color.new(color.gray, 20)
+    table.cell(trk, 0, 0, "SIGNAL ACCURACY", text_color = color.white, bgcolor = hdr, text_halign = text.align_left)
+    table.cell(trk, 1, 0, nAll > 0 ? str.tostring(nAll) + " closed signals" + since : "no closed signals yet", text_color = color.white, bgcolor = hdr, text_halign = text.align_right)
+    table.cell(trk, 0, 1, "Correct", text_color = color.gray, text_size = size.normal, text_halign = text.align_left)
+    table.cell(trk, 1, 1, f_cp(cAll, nAll), text_color = nAll > 0 and cAll * 2 >= nAll ? color.teal : color.red, text_size = size.normal, text_halign = text.align_right,
+         tooltip = "Price moved the signal's way between the indicator's entry (next open) and its exit. Before costs.")
+    table.cell(trk, 0, 2, "   Buy signals", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
+    table.cell(trk, 1, 2, nBuy > 0 ? str.tostring(cBuy) + " of " + str.tostring(nBuy) + "  (" + str.tostring(100.0 * cBuy / nBuy, "0") + "%)" : "-", text_size = size.small, text_halign = text.align_right)
+    table.cell(trk, 0, 3, "   Sell signals", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
+    table.cell(trk, 1, 3, nSell > 0 ? str.tostring(cSell) + " of " + str.tostring(nSell) + "  (" + str.tostring(100.0 * cSell / nSell, "0") + "%)" : "-", text_size = size.small, text_halign = text.align_right)
+    table.cell(trk, 0, 4, "When right (avg)", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
+    table.cell(trk, 1, 4, na(avgW) ? "-" : f_pct(avgW) + "   (peaked " + f_pct(peakW) + ")", text_color = color.teal, text_size = size.small, text_halign = text.align_right,
+         tooltip = "Final move of the correct signals, and how far in your favour they had gone at their best before the exit.")
+    table.cell(trk, 0, 5, "When wrong (avg)", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
+    table.cell(trk, 1, 5, na(avgL) ? "-" : f_pct(avgL) + "   (peaked " + f_pct(peakL) + ")", text_color = color.red, text_size = size.small, text_halign = text.align_right,
+         tooltip = "Final move of the wrong signals, and how far in your favour they had first gone before turning against you.")
 
 // ================================================================ cloud ====
 candle = ta.sma(close, 7)

@@ -162,13 +162,27 @@ cloud, bands, diamonds, QQE and S&R layers are visual context.
 | Walk-forward over 160 settings × 4 timeframes | **no setting positive on held-out data with significance** |
 | Daily long-only, 5 years | +0.1%/yr vs +5.8%/yr buy-and-hold |
 
-**SL / TP tracker** (bottom-left panel). For every closed signal it records which
-levels price *reached* while the trade was open — SL, TP1, TP2, TP3 — whether or not
-that level is set to close the trade, which of TP1 and SL was hit *first*, and how
-the trade *actually* closed (signal / SL / target / 15:10). Counts cover only the
-history loaded on the chart. Validated against an independent 4-year XAUUSD analysis
-(identical on 1h, 4h and daily): expect roughly SL 0–2%, TP1 ~30%, TP2 ~13%, TP3 ~9%,
-and ~70% reaching neither.
+**Signal accuracy tracker** (bottom-left panel). Was each signal *right*? A signal is
+correct if price moved its way between the indicator's entry (next open) and its exit —
+judged **before costs**, on direction alone; the stats panel shows what it earned after
+costs. Split into Buy and Sell signals, with the average final move when right / wrong
+and how far each group had *peaked* in your favour before the exit.
+
+The first version counted how often price reached SL and TP levels. With the stop
+~5 ATR away and the opposite signal closing ~70% of trades first, the stop was reached
+in only 0-2% of trades, so it measured almost nothing. Replaced on user feedback.
+
+Baseline, XAUUSD Oct 2021 - Oct 2026, default settings (Pine logic ported to Python and
+checked against the independent Stage 1 engine — identical):
+
+| Chart | Correct | Buys / Sells right | When right (peak) | When wrong (peak) |
+|---|---|---|---|---|
+| 1-hour | 37.3% of 1,438 | 41% / 33% | +0.97% (+1.93%) | -0.54% (+0.37%) |
+| 4-hour | 38.7% of 385 | 46% / 32% | +2.03% (+3.98%) | -1.10% (+0.66%) |
+| Daily | 34.8% of 69 | 43% / 27% | +4.99% (+10.81%) | -2.84% (+1.88%) |
+
+Winners give back about half their peak before the exit; 26% of losing 1h trades were
+up at least +0.5% first. An observation about exits, not yet a tested fix.
 
 **Your own trade ("My trade" in Settings).** TradingView gives indicators no access
 to your account, orders or screen, so the indicator cannot detect an order by
