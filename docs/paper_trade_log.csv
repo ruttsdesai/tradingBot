@@ -1,0 +1,2 @@
+date,time (as on chart),timeframe,direction,signal time,my entry price,indicator entry price,my SL,my TP,exit time,exit price,exit reason (signal / SL / TP / manual),P&L (USD),followed the indicator? (Y/N),notes
+2026-10-07,18:40,5m,Long,18:35,4082.38,4075.20,4060.00,4100.00,22:50,4110.39,signal,+2801.00,Y,example row - delete

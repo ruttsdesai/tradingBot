@@ -718,6 +718,19 @@ but t<=0.62, also noise. VWAP, the one I flagged as most plausible, showed nothi
 
 **User location (stated 2026-10-07): CANADA.** Do not assume India from the Dhan/NSE work. For XAUUSD: legal via CIRO-regulated, CIPF-covered dealers; avoid offshore unregistered brokers. Gold test results: docs/GOLD_TEST_PLAN.md (Stage 1 FAILED, 2026-10-07).
 
+**2026-10-07 — PENDING: user is PAPER-TRADING the cleaned EzAlgo on XAUUSD until Friday 2026-10-09.**
+- Platform: TradingView Paper Trading, OANDA:XAUUSD, mostly 5m. User is in CANADA (chart clock shows UTC+5:30).
+- Indicator: `tradingview/ezalgo_cleaned.pine` (latest has: NSE rules auto-off on non-NSE symbols, live
+  TP/SL from the entry candle, "My trade" inputs, SL/TP tracker panel bottom-left). Advised Cost per side = 0.01.
+- The indicator FAILED its pre-registered 5-year gold backtest (docs/GOLD_TEST_PLAN.md). This paper week is the
+  user's own practice, not a rescue of the strategy -- judge it as such.
+- User will send: (1) chart screenshot with both panels + settings line, (2) TradingView Paper Trading History
+  (CSV export or screenshots), (3) `docs/paper_trade_log.csv` filled in.
+- When results arrive: compare the tracker's reach rates with the 4-year baseline (1h: SL 2%, TP1 30%, TP2 13%,
+  TP3 9%, neither 68%; 5m untested on gold -- NSE 5m was TP1 19%, SL 0.4%); compare the user's fills vs the
+  indicator's next-open fills (slippage/timing); separate trades where they followed vs overrode the signal;
+  a week is ~tens of trades -- report it as a sample, not a verdict.
+
 **Security note:** user has repeatedly pasted Dhan JWT access tokens into chat. They expire in 24h;
 always tell them to regenerate rather than reuse, tokens go only in git-ignored `.env`, never commit
 `.env`. Paper mode needs no credentials at all.
