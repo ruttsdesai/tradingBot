@@ -94,12 +94,12 @@ f_pct(float x) =>
 
 // SL/TP tracker: adds one CLOSED trade to the running tallies. Arrays are
 // passed by reference, so this updates them in place.
-//   reach (per trade): [SL, TP1, TP2, TP3] reached while the trade was open
+//   lvlHit (per trade): [SL, TP1, TP2, TP3] reached while the trade was open
 //   tally: 0-3 reached SL/TP1/TP2/TP3 | 4 TP1 first | 5 SL first | 6 both on one candle
 //          7 reached neither | 8 closed by signal | 9 by SL | 10 by target | 11 by 15:10
-f_tally(array<int> tally, array<bool> reach, int firstHit, string why) =>
+f_tally(array<int> tally, array<bool> lvlHit, int firstHit, string why) =>
     for i = 0 to 3
-        if array.get(reach, i)
+        if array.get(lvlHit, i)
             array.set(tally, i, array.get(tally, i) + 1)
     int k = firstHit == 1 ? 4 : firstHit == -1 ? 5 : firstHit == 2 ? 6 : 7
     array.set(tally, k, array.get(tally, k) + 1)
@@ -185,7 +185,7 @@ var float grossW = 0.0
 var float grossL = 0.0
 
 // SL/TP tracker state (see f_tally)
-var array<bool> reach = array.from(false, false, false, false)
+var array<bool> lvlHit = array.from(false, false, false, false)
 var int   firstHit = 0          // 0 neither yet | 1 TP1 first | -1 SL first | 2 both on one candle
 var array<int> tally = array.new<int>(12, 0)
 var int   firstEntryTime = na
@@ -200,7 +200,7 @@ if barstate.isconfirmed
         grossW += math.max(r, 0.0)
         grossL += math.max(-r, 0.0)
         f_exitLabel(open, r, "15:10")
-        f_tally(tally, reach, firstHit, "15:10")
+        f_tally(tally, lvlHit, firstHit, "15:10")
         evSq := true
         pos := 0
 
@@ -215,7 +215,7 @@ if barstate.isconfirmed
                 grossW += math.max(r, 0.0)
                 grossL += math.max(-r, 0.0)
                 f_exitLabel(open, r, "Exit")
-                f_tally(tally, reach, firstHit, "Exit")
+                f_tally(tally, lvlHit, firstHit, "Exit")
                 pos := 0
             if pendDir != 0 and pos == 0
                 pos := pendDir
@@ -227,7 +227,7 @@ if barstate.isconfirmed
                 tp2Px := entryPx + pendDir * risk * r2
                 tp3Px := entryPx + pendDir * risk * r3
                 tgtPx := tpSel == "TP1" ? tp1Px : tpSel == "TP2" ? tp2Px : tpSel == "TP3" ? tp3Px : na
-                array.fill(reach, false)
+                array.fill(lvlHit, false)
                 firstHit := 0
                 if na(firstEntryTime)
                     firstEntryTime := time
@@ -243,13 +243,13 @@ if barstate.isconfirmed
         bool tp2Now = pos == 1 ? high >= tp2Px : low <= tp2Px
         bool tp3Now = pos == 1 ? high >= tp3Px : low <= tp3Px
         if slNow
-            array.set(reach, 0, true)
+            array.set(lvlHit, 0, true)
         if tp1Now
-            array.set(reach, 1, true)
+            array.set(lvlHit, 1, true)
         if tp2Now
-            array.set(reach, 2, true)
+            array.set(lvlHit, 2, true)
         if tp3Now
-            array.set(reach, 3, true)
+            array.set(lvlHit, 3, true)
         if firstHit == 0 and (slNow or tp1Now)
             firstHit := slNow and tp1Now ? 2 : tp1Now ? 1 : -1
 
@@ -265,7 +265,7 @@ if barstate.isconfirmed
             grossW += math.max(r, 0.0)
             grossL += math.max(-r, 0.0)
             f_exitLabel(px, r, "SL")
-            f_tally(tally, reach, firstHit, "SL")
+            f_tally(tally, lvlHit, firstHit, "SL")
             evSL := true
             pos := 0
         else if not na(tgtPx) and high >= tgtPx
@@ -277,7 +277,7 @@ if barstate.isconfirmed
             grossW += math.max(r, 0.0)
             grossL += math.max(-r, 0.0)
             f_exitLabel(px, r, tpSel)
-            f_tally(tally, reach, firstHit, tpSel)
+            f_tally(tally, lvlHit, firstHit, tpSel)
             evTP := true
             pos := 0
     else if pos == -1
@@ -290,7 +290,7 @@ if barstate.isconfirmed
             grossW += math.max(r, 0.0)
             grossL += math.max(-r, 0.0)
             f_exitLabel(px, r, "SL")
-            f_tally(tally, reach, firstHit, "SL")
+            f_tally(tally, lvlHit, firstHit, "SL")
             evSL := true
             pos := 0
         else if not na(tgtPx) and low <= tgtPx
@@ -302,7 +302,7 @@ if barstate.isconfirmed
             grossW += math.max(r, 0.0)
             grossL += math.max(-r, 0.0)
             f_exitLabel(px, r, tpSel)
-            f_tally(tally, reach, firstHit, tpSel)
+            f_tally(tally, lvlHit, firstHit, tpSel)
             evTP := true
             pos := 0
 
