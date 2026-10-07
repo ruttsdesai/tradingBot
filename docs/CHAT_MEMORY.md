@@ -716,6 +716,8 @@ but t<=0.62, also noise. VWAP, the one I flagged as most plausible, showed nothi
   at Rs200k, 28 days and **-Rs29,275**. That is the honest price of finding out. NOT recommended
   before something cheaper pays off.
 
+**User location (stated 2026-10-07): CANADA.** Do not assume India from the Dhan/NSE work. For XAUUSD: legal via CIRO-regulated, CIPF-covered dealers; avoid offshore unregistered brokers. Gold test results: docs/GOLD_TEST_PLAN.md (Stage 1 FAILED, 2026-10-07).
+
 **Security note:** user has repeatedly pasted Dhan JWT access tokens into chat. They expire in 24h;
 always tell them to regenerate rather than reuse, tokens go only in git-ignored `.env`, never commit
 `.env`. Paper mode needs no credentials at all.

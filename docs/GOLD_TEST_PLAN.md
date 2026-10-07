@@ -81,3 +81,14 @@ gold about half the time in a bull market; the timing on 1h/4h is suggestive, no
 significant (per-trade t 0.73 / 1.61 at 0.03%), and on 1h costs consume most of it.
 
 Per the plan: no parameter tuning, Stages 2–4 not run.
+
+---
+
+**Correction 2026-10-07 (instrument note only; no test rule changed).** The user is
+based in **Canada**, not India — the "Instrument note" above was a wrong assumption.
+In Canada, trading spot XAUUSD is legal through a dealer regulated by **CIRO** and
+covered by **CIPF**; offshore unregistered brokers are what to avoid. The Stage 1
+backtest is therefore directly on the instrument the user would trade, and no MCX
+re-validation is needed. Not modelled in Stage 1: overnight financing (swap) on
+CFD/spot-metal positions — since the long+short system is in the market ~100% of the
+time, including it could only make the FAIL result worse.
